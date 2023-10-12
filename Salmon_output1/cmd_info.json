@@ -1,0 +1,22 @@
+{
+    "salmon_version": "1.10.2",
+    "index": "MG1655_index",
+    "libType": "IU",
+    "unmatedReads": [
+        "Trimmed_fastqs/NC_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/NC_3_R1_001.fastq.gz",
+        "Trimmed_fastqs/NC_ind_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/NC_ind_3_R1_001.fastq.gz",
+        "Trimmed_fastqs/WT_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/WT_3_R1_001.fastq.gz",
+        "Trimmed_fastqs/WT_ind_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/WT_ind_3_R1_001.fastq.gz",
+        "Trimmed_fastqs/s4_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/s4_3_R1_001.fastq.gz",
+        "Trimmed_fastqs/s4_ind_1_R1_001.fastq.gz",
+        "Trimmed_fastqs/s4_ind_3_R1_001.fastq.gz"
+    ],
+    "gcBias": [],
+    "output": "Salmon_output1/",
+    "auxDir": "aux_info"
+}

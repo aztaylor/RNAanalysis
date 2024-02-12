@@ -1,0 +1,5 @@
+"0","# And we can then extranct the sample names."
+"0","quant_dirs <- list.files(quant_fp, pattern = ""_quant$"", full.names = TRUE)"
+"0","sample_names <- gsub(""_quant$"", """", basename(quant_dirs))"
+"0","# correct for the FASTQ generation file included in the directory."
+"0","sample_names <- sample_names[1: 48]"

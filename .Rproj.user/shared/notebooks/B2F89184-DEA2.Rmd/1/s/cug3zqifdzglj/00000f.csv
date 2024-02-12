@@ -1,0 +1,5 @@
+"0","# First lets list all of the quant.sf files"
+"0","cwd <- getwd()"
+"0","quant_fp <- paste(cwd, 'quants/', sep = '/')"
+"0",""
+"0","quant_files <- list.files(path = quant_fp, pattern=""quant.sf$"", recursive = TRUE)"

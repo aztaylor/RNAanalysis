@@ -30,7 +30,7 @@ txi <- tximport(paste(cwd, "quants", quant_files, sep='/'), type = "salmon", txO
 # Here we will create a temporary Dataframe for the TXI data so that we can add the sample names as columns.
 # Before feeding to DESeq2 we need to convert back to a numeric matrix.
 atts <- attributes(txi)
-data <- data.table(data = txi$counts) # Using DataTables allows for better performance
+data <- data.table(data = txi$counts) # Using DaRMDtaTables allows for better performance
 name_list <- attributes(txi)
 
 colnames(data) <- sample_names
@@ -81,7 +81,7 @@ dds <- DESeq(dds)
 ```
 
 ```{r}
-res <- results(dds)
+res <- results(dds, contrast = c("condition", "s4_1", "NC_1"))
 res
 ```
 

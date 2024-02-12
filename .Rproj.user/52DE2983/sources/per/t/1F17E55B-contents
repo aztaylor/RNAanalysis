@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 library("tximport")
 library("readr")
 
@@ -29,11 +28,3 @@ for (dir in dirs) {
   }
 }
 print(data)
-=======
-# Install correct packages
-if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install(version = "3.17")
-
-BiocManager:install("tximport")
->>>>>>> 0c6517060d1631a0e2c382b97cc0f7345d44f4bd

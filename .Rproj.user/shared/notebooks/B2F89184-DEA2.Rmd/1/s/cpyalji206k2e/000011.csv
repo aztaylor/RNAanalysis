@@ -1,0 +1,8 @@
+"0","data = list()"
+"0","txi_length = length(txi)"
+"0","for (i in 1:(txi_length-1)) {"
+"0","  temp <- as.data.frame(txi[[i]])"
+"0","  colnames(temp) <- sample_names"
+"0","  data[[i]] <- as.matrix(temp)"
+"0","}"
+"0",""

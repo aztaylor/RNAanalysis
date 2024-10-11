@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 library("tximport")
 library("readr")
 

@@ -53,7 +53,7 @@ rownames(coldata) <- sample_names
 # This does not seem to be true for our data but its good to make sure.
 # We also need to make sure that the coldata labels match the counts data.
 
-head(coldata, 5)
+print(coldata)
 ```
 
 ```{r}
@@ -69,8 +69,6 @@ all(rownames(coldata)==colnames(data)) # Ensure they are in the right order
 
 # Now create the DESeq2 Dataset`
 
-#condition <- NC_1 + NC_3 + NC_ind_1 + NC_ind_3 + s4_1 + s4_3 + s4_ind_1 + s4_ind_3 + WT_1 + #WT_3 + WT_ind_1 + WT_ind_3
-
 dds = DESeqDataSetFromMatrix(round(data), colData = coldata, design = ~ condition)
 
 
@@ -81,10 +79,145 @@ dds <- DESeq(dds)
 ```
 
 ```{r}
-res <- results(dds, contrast = c("condition", "s4_1", "NC_1"))
-res
+res <- results(dds)
+
 ```
 
 ```{r}
-plotMA(res, ylim=c(-2,2))
+plotMA(res, ylim=c(-10,10))
+```
+
+```{r}
+
+```
+
+```{r}
+resOrdered <- res[order(res$pvalue),]
+```
+
+```{r}
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Extract results
+res <- as.data.frame(results(dds))
+
+# Add a column for significance based on adjusted p-value
+# You can adjust the threshold according to your needs (e.g., 0.05)
+res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Create the volcano plot
+# Create the volcano plot without the title, with legend inside, and larger global font size
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+       geom_point(alpha = 0.6, size = 1.5) +
+        scale_color_manual(values = c("gray", "red")) +
+        theme_minimal(base_size = 14) +  # Set a base global font size (adjust as needed)
+        geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+        geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+        labs(title = NULL,  # Remove the title
+             x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Adjust text size for labels  # Adjust the y-axis range # Specify breaks for y-axis ticks
+        theme(
+          legend.position = c(0.89, 0.5),  # Move the legend inside the plot on the right side
+          legend.title = element_text(size = 14),  # Increase the font size of the legend title
+          legend.text = element_text(size = 12),  # Increase the font size of the legend text
+          plot.title = element_blank(),  # Ensure no title
+          text = element_text(size = 14),  # Global font size adjustment for the entire plot
+          legend.background = element_rect(color = "black", fill = NULL)  # Add a black border around the legend
+        )
+
+  
+#ggsave("volcanoplot.png", plot = vplot,width = 8, height = 4, dpi=300)
+```
+
+
+```{r}
+# Filter for significant genes with deseq2padj < 0.05 and log2 fold change > 1 (or any thresholds you prefer)
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Extract the rownames, which should correspond to the gene names
+significant_gene_names <- rownames(sig_genes)
+
+# Print the significant gene names
+print(significant_gene_names)
+
+# Optionally, write them to a CSV file
+write.csv(significant_gene_names, file = "significant_genes.csv")
+
+
+```
+
+
+```{r}
+# Assuming 'txi' is the tximport object and it has gene names in it.
+# Check if row names of the txi object are the gene names you expect:
+head(rownames(txi$counts))  # This should show gene names.
+
+# Create DESeq2 Dataset using the counts matrix with gene names as rownames.
+dds <- DESeqDataSetFromMatrix(round(txi$counts), colData = coldata, design = ~ condition)
+
+# Proceed with DESeq2 analysis
+dds <- DESeq(dds)
+```
+
+
+```{r}
+# Ensure rownames of res correspond to gene names (they should if txi contains gene names)
+head(rownames(res))  # This should show gene names.
+
+# Extract significant genes with gene names
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Get gene names of significant genes
+significant_gene_names <- rownames(sig_genes)
+
+# Print or save the gene names
+print(significant_gene_names)
+write.csv(significant_gene_names, file = "significant_genes.csv")
+```
+
+
+```{r}
+res <- results(dds)
+```
+
+
+```{r}
+# Load ggplot2 for plotting
+
+
+# Extract results
+res <- as.data.frame(results(dds))
+
+# Add a column for significance based on adjusted p-value and fold change
+res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Add a column for gene names (assuming rownames are gene names)
+res$gene <- rownames(res)
+
+# Filter the significant genes for labeling
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Create the volcano plot with labels for significant genes
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +  # Points on the plot
+  scale_color_manual(values = c("gray", "red")) +  # Customize colors
+  theme_minimal() +  # Simple theme
+  geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +  # Fold change cutoffs
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +  # p-value cutoff
+  labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Labels
+  geom_text(data = sig_genes, aes(label = gene), vjust = 1.5, size = 3)  # Add gene name labels to significant points
+
+```
+```{r}
+top_sig_genes <- head(sig_genes[order(sig_genes$padj), ], 10)
+
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("gray", "red")) +
+  theme_minimal() +
+  geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+  labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +
+  geom_text(data = top_sig_genes, aes(label = gene), vjust = 1.5, size = 2)
+
 ```

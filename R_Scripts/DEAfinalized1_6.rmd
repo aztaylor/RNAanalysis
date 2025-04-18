@@ -507,9 +507,11 @@ se5$genotype <- relevel(factor(se5$genotype), ref = "NC")
 
 se18$treatment <- relevel(factor(se18$treatment), ref = "Nind") 
 se18$genotype <- relevel(factor(se18$genotype), ref = "NC") 
+se18$timepoint <- factor(se18$timepoint)
 
-design(se5) <- ~ genotype + treatment + genotype:treatmentdds5
-design(se18) <- ~ genotype + treatment + genotype:treatment
+design <- ~ genotype + treatment + genotype:treatment
+dds5 <- DESeqDataSet(se5, design = design)
+dds18 <- DESeqDataSet(se18, design = design)
 
 dds5 <- DESeq(dds5)
 dds18 <- DESeq(dds18)
@@ -520,8 +522,9 @@ rld18 <- rlog(dds18, blind = FALSE)
 resultsNames(dds5)
 resultsNames(dds18)
 
-contrast = list(c("treatment_ind_vs_Nind"),
-                c("genotypes4.timpoint5")
+contrast = c("genotype",
+             "s4",
+             "NC"
 )
 
 res5s4 <- results(dds5, contrast = contrast)
@@ -529,39 +532,41 @@ res18s4 <- results(dds18, contrast = contrast)
 
 n_topgenes = 4577
 n_topVarGenes = 4577
-pval_cutoff = 0.5
+pval_cutoff =0.01
 topVarGenes <- head(order(rowVars(assay(dds)), decreasing = TRUE), n_topgenes)
 
 sig_res5s4 <- subset(res5s4, pvalue < pval_cutoff)
 sig_res18s4 <- subset(res18s4, pvalue < pval_cutoff)
 
-sorted_sig_res5s4 <- na.omit(res5s4[order(sig_res5s4$log2FoldChange, decreasing = TRUE), ])
-sorted_sig_res5s4 <- na.omit(res18s4[order(sig_res18s4$log2FoldChange, decreasing = TRUE), ])
+sorted_sig_res5s4 <- res5s4[order(sig_res5s4$log2FoldChange, decreasing = TRUE), ]
+sorted_sig_res18s4 <- res18s4[order(sig_res18s4$log2FoldChange, decreasing = TRUE), ]
 print(sorted_sig_res5s4)
 
-topgenes5s4 <- rownames(head(order(sig_res5s4$log2FoldChange, decreasing = TRUE), n_topgenes))
-topgenes18s4 <- rownames(head(order(sig_res18s4$log2FoldChange, decreasing = TRUE),, n_topgenes))
-
-l2f_5_s4 <- as.data.frame(res5s4$log2FoldChange)
-rownames(l2f_5_s4) <- rownames(res5s4)
-l2f_5_s4 <- l2f_5_s4[topgenes5s4, , drop=FALSE]
-l2f_5_s4$rownames <- topgenes5s4
+l2f_5_s4 <- as.data.frame(na.omit(sorted_sig_res5s4$log2FoldChange))
+rownames(l2f_5_s4) <- rownames(sorted_sig_res18s4[!is.na(sorted_sig_res5s4)])
+#l2f_5_s4 <- l2f_5_s4[topgenes5s4, , drop=FALSE]
+#l2f_5_s4$rownames <- topgenes5s4
 #colnames("WT 5hr untreated vs. st 18hr treated")
 
-l2f_18_s4 <- as.data.frame(res18s4$log2FoldChange)
-rownames(l2f_18_s4) <- rownames(res18s4)
-l2f_18_s4 <- l2f_18_s4[topgenes18s4, , drop=FALSE]
-l2f_18_s4$rownames <- topgenes18s4
+l2f_18_s4 <- as.data.frame(na.omit(sorted_sig_res18s4$log2FoldChange))
+rownames(l2f_18_s4) <- rownames(sorted_sig_res5s4[!is.na(sorted_sig_res5s4)])
+#l2f_18_s4 <- l2f_18_s4[topgenes18s4, , drop=FALSE]
+#l2f_18_s4$rownames <- topgenes18s4
 #colnames("WT 5hr untreated vs. st 18hr treated")
 
 l <- list(l2f_5_s4, l2f_18_s4)
-l2f_df <- Reduce(function(x, y) merge(x, y, by="rownames", all=T), l)
+l2f_df <- merge(
+  l2f_5_s4,
+  l2f_18_s4,
+  by = "row.names",
+  all = TRUE
+)
 rownames(l2f_df) <- l2f_df$rownames
 print(l2f_df)
 l2f_df <- l2f_df[,-1]
 l2f_raw_df <- data.frame(l2f_df)
 l2f_raw_df[is.na(l2f_raw_df)]<-0
-l2f_df <- na.omit(l2f_df)
+#l2f_df <- na.omit(l2f_df)
 colnames(l2f_raw_df) <- c("Targeting5hr", "Targeting18hr")
 colnames(l2f_df) <- c("Targeting5hr", "Targeting18hr")
 

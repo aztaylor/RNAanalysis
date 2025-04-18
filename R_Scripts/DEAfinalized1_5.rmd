@@ -519,9 +519,9 @@ rld18 <- rlog(dds18, blind = FALSE)
 resultsNames(dds5)
 resultsNames(dds18)
 
-
-res5s4 <- results(dds5, contrast = list("genotypes4.treatmentind"))
-res18s4 <- results(dds18, contrast = list("genotypes4.treatmentind"))
+contrast = list("treatment_ind_vs_Nind")
+res5s4 <- results(dds5, contrast = contrast)
+res18s4 <- results(dds18, contrast = contrast)
 
 
 n_topgenes = 4577
@@ -557,14 +557,14 @@ l2f_raw_df[is.na(l2f_raw_df)]<-0
 l2f_df <- na.omit(l2f_df)
 colnames(l2f_raw_df) <- c("Targeting5hr", "Targeting18hr")
 colnames(l2f_df) <- c("Targeting5hr", "Targeting18hr")
-l2f_df_tv <-l2f_df[topVarGenes, ] # Total Variance accross samples.
-l2f_df_5_s4 <- l2f_df[order(abs(l2f_df$Targeting5hr), decreasing = TRUE), , drop=FALSE]
+l2f_df_tv <-l2f_raw_df[topVarGenes, ] # Total Variance accross samples.
+l2f_df_5_s4 <- l2f_raw_df[order(abs(l2f_df$Targeting5hr), decreasing = TRUE), , drop=FALSE]
 
 clusterRows <- TRUE
 clusterCols <- FALSE
 
 # Generate heatmap
-phm <- pheatmap(l2f_df, 
+phm <- pheatmap(l2f_raw_df, 
          color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(n_topgenes),
          angle_col = 315,
          width = fig.width,

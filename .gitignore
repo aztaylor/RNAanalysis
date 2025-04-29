@@ -95,6 +95,7 @@ Trimmed_fastqs/WT_3_R1_001.fastq.gz
 Trimmed_fastqs/WT_ind_1_R1_001.fastq.gz
 Trimmed_fastqs/WT_ind_3_R1_001.fastq.gz
 merge_fastqs
+Secrets/
 <<<<<<< Updated upstream
 .Rproj.user
 Latex_Files

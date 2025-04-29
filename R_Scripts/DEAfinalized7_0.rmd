@@ -141,14 +141,6 @@ se$genotype %<>% relevel("NC")
 
 
 ```{r}
-#se$genotype
-
-```
-```{r}
-#head(se$treatment)
-```
-
-```{r}
 #round(colSums(assay(se))/1e6, 3)
 
 ```
@@ -164,21 +156,21 @@ meanSdPlot(log.cts.one, ranks = FALSE)
 ```
 # Run Prefiltering because DESeqDataSet contains several rows that contain zeros or small amounts. Prefiltering will remove these and allow for increased speed when running functions.
 ```{r}
-nrow(dds)
-smallestGroupSize <- 4
-keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
-dds <- dds[keep,]
-nrow(dds)
+#nrow(dds)
+#smallestGroupSize <- 4
+#keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+#dds <- dds[keep,]
+#nrow(dds)
 ```
 
 # Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
 ```{r}
-lambda <- 10^seq(from = -1, to = 2, length = 1000)
-cts <- matrix(rpois(1000*100, lambda), ncol = 100)
-meanSdPlot(cts, ranks = FALSE)
+#lambda <- 10^seq(from = -1, to = 2, length = 1000)
+#cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+#meanSdPlot(cts, ranks = FALSE)
 
-log.cts.one <- log2(cts + 1)
-meanSdPlot(log.cts.one, ranks = FALSE)
+#log.cts.one <- log2(cts + 1)
+#meanSdPlot(log.cts.one, ranks = FALSE)
 ```
 # Now we will compare the variance stabilizing transformation (VST), regularized-logarithm transformation (rlog), and log2 transformation.
 ```{r}
@@ -265,9 +257,73 @@ ggplot(mds, aes(x = `1`, y = `2`, color = treatment, shape = genotype, alpha = t
   geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
 ```
 ```{r}
+design <- ~ genotype + timepoint + genotype:timepoint + treatment:genotype:timepoint
+#design =~ genotype + timepoint + treatment
+
+dds <- DESeqDataSet(se, design = design)
+dds <- DESeq(dds)
+resultsNames(dds)
+
+# Get LFCs for s4 at 5hr
+res_s4_5hr <- results(
+  dds, 
+  contrast = list(
+    c("genotypes4.timepoint5.treatmentind")
+  )
+)
+
+# Get LFCs for NC at 5hr
+res_NC_5hr <- results(
+  dds, 
+  contrast = list(
+    c("genotypeNC.timepoint5.treatmentind")
+  )
+)
+
+# Get LFCs for WT at 5hr
+res_WT_5hr <- results(
+  dds, 
+  contrast = list(
+    c("genotypeWT.timepoint5.treatmentind")
+  )
+)
+
+# significant genes for Wild Type, Negative control, and s4 at 5 hr.
+sig_genes <- unique(c(
+  rownames(subset(res_NC_5hr, padj < 0.05 & abs(log2FoldChange) > 1)),
+  rownames(subset(res_s4_5hr, padj < 0.05 & abs(log2FoldChange) > 1)),
+  rownames(subset(res_WT_5hr, padj < 0.05 & abs(log2FoldChange) > 1))
+))
+
+# Combine into a heatmap matrix
+heatmap_data <- data.frame(
+  Gene = rownames(res_NC_5hr),
+  WT_5hr = res_WT_5hr$log2FoldChange,
+  NC_5hr = res_NC_5hr$log2FoldChange,
+  s4_5hr = res_s4_5hr$log2FoldChange
+)
+
+rownames(heatmap_data) <- heatmap_data[,1]
+heatmap_data <- na.omit(heatmap_data)
+heatmap_data <- heatmap_data[sig_genes,-1]
+pheatmap(
+  heatmap_data,
+  color = colorRampPalette(c("blue", "white", "red"))(100),  # Blue = down, Red = up
+  cluster_cols = FALSE,  # Keep columns ordered as NC vs. s4
+  cluster_rows = FALSE,   # Cluster genes by LFC similarity
+  show_rownames = FALSE, # Hide gene names if too dense
+  main = "Log2FC (Induced vs. Non-Induced) at 5hr",
+  breaks = seq(-5, 5, length.out = 100)  # Symmetric color scale
+)
+```
+
+```{r}
+design =~ genotype*timepoint*treatment #~ genotype + timepoint + treatment + genotype:timepoint + genotype:treatment + genotype:timepoint:treatment
+dds <- DESeqDataSet(se, design = design)
 dds <- DESeq(dds)
 rld <- rlog(dds, blind = FALSE)
-res_NC_5hr <- results(dds)#, contrast = list(c("te#c("treatment", "ind", "Nind"))
+resultsNames(dds)
+res_NC_5hr <- results(dds, contrast = list(c("treatmentind.s4.timepoint5")))#("treatment", "ind", "Nind"))
 resultsNames(dds)
 model.matrix(design, as.data.frame(colData(dds)))
 ```

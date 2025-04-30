@@ -156,21 +156,21 @@ meanSdPlot(log.cts.one, ranks = FALSE)
 ```
 # Run Prefiltering because DESeqDataSet contains several rows that contain zeros or small amounts. Prefiltering will remove these and allow for increased speed when running functions.
 ```{r}
-#nrow(dds)
-#smallestGroupSize <- 4
-#keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
-#dds <- dds[keep,]
-#nrow(dds)
+nrow(dds)
+smallestGroupSize <- 4
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+nrow(dds)
 ```
 
 # Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
 ```{r}
-#lambda <- 10^seq(from = -1, to = 2, length = 1000)
-#cts <- matrix(rpois(1000*100, lambda), ncol = 100)
-#meanSdPlot(cts, ranks = FALSE)
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+meanSdPlot(cts, ranks = FALSE)
 
-#log.cts.one <- log2(cts + 1)
-#meanSdPlot(log.cts.one, ranks = FALSE)
+log.cts.one <- log2(cts + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
 ```
 # Now we will compare the variance stabilizing transformation (VST), regularized-logarithm transformation (rlog), and log2 transformation.
 ```{r}
@@ -264,13 +264,20 @@ dds <- DESeqDataSet(se, design = design)
 dds <- DESeq(dds)
 resultsNames(dds)
 
+# Assuming 'rld' is your rlog-transformed data (or use vst()), filter 
+# for the top 50.
+gene_variance <- apply(assay(rld), 1, var)  # Variance per gene
+
+# Sort genes by variance (descending) and take top 50
+top_50_genes <- names(sort(gene_variance, decreasing = TRUE)[1:50])
+
 # Get LFCs for s4 at 5hr
 res_s4_5hr <- results(
   dds, 
   contrast = list(
     c("genotypes4.timepoint5.treatmentind")
   )
-)
+)[top_50_genes,]
 
 # Get LFCs for NC at 5hr
 res_NC_5hr <- results(
@@ -278,7 +285,7 @@ res_NC_5hr <- results(
   contrast = list(
     c("genotypeNC.timepoint5.treatmentind")
   )
-)
+)[top_50_genes,]
 
 # Get LFCs for WT at 5hr
 res_WT_5hr <- results(
@@ -286,8 +293,9 @@ res_WT_5hr <- results(
   contrast = list(
     c("genotypeWT.timepoint5.treatmentind")
   )
-)
+)[top_50_genes,]
 
+# Filtering
 # significant genes for Wild Type, Negative control, and s4 at 5 hr.
 sig_genes <- unique(c(
   rownames(subset(res_NC_5hr, padj < 0.05 & abs(log2FoldChange) > 1)),
@@ -305,7 +313,7 @@ heatmap_data <- data.frame(
 
 rownames(heatmap_data) <- heatmap_data[,1]
 heatmap_data <- na.omit(heatmap_data)
-heatmap_data <- heatmap_data[sig_genes,-1]
+heatmap_data <- heatmap_data[sig_genes,-1] #filter for significant genes.
 pheatmap(
   heatmap_data,
   color = colorRampPalette(c("blue", "white", "red"))(100),  # Blue = down, Red = up

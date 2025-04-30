@@ -406,6 +406,87 @@ ggsave("../Figures/enhanced_heatmap.png",
        height = fig_height, 
        width = fig_width)
 ```
+# Now let's retrieve the annotation information for MG1655z1 so we can cluster based on function.
+```{r}
+# Check current format
+str(heatmap_data$Gene)  # Should show 'chr' not 'factor' or 'numeric'
+
+# Force convert to character if needed
+heatmap_data$Gene <- as.character(heatmap_data$Gene)
+
+# Remove NA/blank entries
+heatmap_data <- heatmap_data[!is.na(heatmap_data$Gene) & heatmap_data$Gene != "", ]
+
+library(org.EcK12.eg.db)
+
+# Method 1: Using locus tags (b-numbers)
+tryCatch({
+  annotations <- select(org.EcK12.eg.db,
+                      keys = unique(heatmap_data$Gene),  # Unique genes only
+                      columns = c("GENENAME", "PATH"), #, "UNIPROT"),
+                      keytype = "ALIAS")
+}, error = function(e) {
+  message("Error with ALIAS keytype. Trying alternative methods...")
+  
+  # Method 2: Try ENTREZID if genes are numeric
+  if(all(grepl("^\\d+$", heatmap_data$Gene))) {
+    annotations <- select(org.EcK12.eg.db,
+                        keys = unique(heatmap_data$Gene),
+                        columns = c("GENENAME", "PATH"),
+                        keytype = "ENTREZID")
+  } 
+  # Method 3: Try SYMBOL (common gene names)
+  else {
+    annotations <- select(org.EcK12.eg.db,
+                        keys = unique(heatmap_data$Gene),
+                        columns = c("ORF", "PATH"),
+                        keytype = "SYMBOL")
+  }
+})
+
+# Check if any annotations were found
+if(nrow(annotations) == 0) {
+  stop("No annotations found. Verify your gene IDs match the database.")
+}
+heatmap_annotated <- heatmap_data %>%
+  left_join(annotations, by = c("Gene" = "ALIAS")) %>%  # Adjust "ALIAS" to your keytype
+  mutate(
+    DisplayName = case_when(
+      !is.na(GENENAME) ~ paste0(Gene, "|", GENENAME),
+      !is.na(PATH) ~ paste0(Gene, "|", PATH),
+      TRUE ~ Gene
+    )
+  )
+
+library(ggplot2)
+
+# Calculate dynamic sizing
+n_genes <- length(unique(heatmap_annotated$Gene))
+gene_height <- max(2, 10 - n_genes/15)  # Adjust text size based on gene count
+
+ggplot(heatmap_annotated, aes(x = GenoType, y = DisplayName, fill = log2FoldChange)) +
+  geom_tile(width = 0.95, height = 0.95) +
+   geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars +
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  ) +
+  labs(y = "Gene (Annotation)")
+```
 ```{r, fig.height=12, fig.width=6}
 # 1. Sort by Maximum LFC
 max_lfc_order <- heatmap_data %>%
@@ -468,19 +549,50 @@ plots[[2]] <- heatmap_data %>%
     caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
   )
 
-# Method 3: Functional Groups
-#plots[[3]] <- heatmap_data %>%
-  #left_join(gene_groups, by = "Gene") %>%
-  #mutate(Gene = factor(Gene, levels = gene_groups %>%
-  #                      arrange(Function, desc(abs(log2FoldChange))) %>%
-  #                      pull(Gene))) %>%
-  #ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  #geom_tile() +
-  #facet_grid(Function ~ ., scales = "free_y", space = "free") +
-  #ggtitle("Grouped by Function")
+# Set your target dimensions (in inches)
+fig_width <- 10 # Your specified width
+fig_height <- 20 # Your specified height
+
+# Calculate optimal tile aspect ratio
+tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
+
+# Create the enhanced heatmap
+plots[[3]] <- ggplot(heatmap_data, 
+                          aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
+  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
+  coord_fixed(ratio = tile_aspect_ratio) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  ) 
+
+plots[[4]] <- heatmap_data %>%
+  left_join(gene_groups, by = "Gene") %>%
+  mutate(Gene = factor(Gene, levels = gene_groups %>%
+                        arrange(Function, desc(abs(log2FoldChange))) %>%
+                        pull(Gene))) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile() +
+  facet_grid(Function ~ ., scales = "free_y", space = "free") +
+  ggtitle("Grouped by Function")
 
 # Method 4: Up/Down Regulation
-plots[[3]] <- heatmap_data %>%
+plots[[5]] <- heatmap_data %>%
   mutate(Gene = factor(Gene, levels = direction_order)) %>%
   ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
   geom_tile() +

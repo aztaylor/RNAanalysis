@@ -257,6 +257,25 @@ ggplot(mds, aes(x = `1`, y = `2`, color = treatment, shape = genotype, alpha = t
   geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
 ```
 ```{r}
+topGene <- rownames(res)[which.max(res$log2FoldChange)]
+plotCounts(dds, gene = topGene, intgroup=c("treatment", "genotype", "timepoint"))
+```
+
+```{r}
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("treatment","genotype", "timepoint"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, shape = treatment)) +
+  scale_y_log10() +  geom_beeswarm(cex = 3)
+```
+
+```{r}
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = interaction(genotype, treatment), shape = treatment)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line()
+```
+
+
+```{r, fig.height=12, fig.width=7}}
+font = "Helvetica"
 design <- ~ genotype + timepoint + genotype:timepoint + treatment:genotype:timepoint
 #design =~ genotype + timepoint + treatment
 
@@ -296,59 +315,214 @@ res_WT_5hr <- results(
 )[top_50_genes,]
 
 # Filtering
+rRNAgenes <- c("rrl*", "rrs*")
 # significant genes for Wild Type, Negative control, and s4 at 5 hr.
 sig_genes <- unique(c(
-  rownames(subset(res_NC_5hr, padj < 0.05 & abs(log2FoldChange) > 1)),
-  rownames(subset(res_s4_5hr, padj < 0.05 & abs(log2FoldChange) > 1)),
-  rownames(subset(res_WT_5hr, padj < 0.05 & abs(log2FoldChange) > 1))
+  rownames(subset(res_NC_5hr, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_NC_5hr)))),
+  rownames(subset(res_s4_5hr, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_s4_5hr)))),
+  rownames(subset(res_WT_5hr, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_WT_5hr))))
 ))
 
-# Combine into a heatmap matrix
-heatmap_data <- data.frame(
+# Now create data frames from each of the results and
+# and assign genes and genotypes data.
+WT_5hr_df <- data.frame(
+  Gene = rownames(res_WT_5hr),
+  log2FoldChange = res_WT_5hr$log2FoldChange,
+  padj = res_WT_5hr$padj,
+  GenoType = "WT"
+)
+NC_5hr_df <- data.frame(
   Gene = rownames(res_NC_5hr),
-  WT_5hr = res_WT_5hr$log2FoldChange,
-  NC_5hr = res_NC_5hr$log2FoldChange,
-  s4_5hr = res_s4_5hr$log2FoldChange
+  log2FoldChange = res_NC_5hr$log2FoldChange,
+  padj = res_NC_5hr$padj,
+  GenoType = "NC"
+)
+s4_5hr_df <- data.frame(
+  Gene = rownames(res_s4_5hr),
+  log2FoldChange = res_s4_5hr$log2FoldChange,
+  padj = res_s4_5hr$padj,
+  GenoType = "s4"
 )
 
-rownames(heatmap_data) <- heatmap_data[,1]
-heatmap_data <- na.omit(heatmap_data)
-heatmap_data <- heatmap_data[sig_genes,-1] #filter for significant genes.
-pheatmap(
-  heatmap_data,
-  color = colorRampPalette(c("blue", "white", "red"))(100),  # Blue = down, Red = up
-  cluster_cols = FALSE,  # Keep columns ordered as NC vs. s4
-  cluster_rows = FALSE,   # Cluster genes by LFC similarity
-  show_rownames = FALSE, # Hide gene names if too dense
-  main = "Log2FC (Induced vs. Non-Induced) at 5hr",
-  breaks = seq(-5, 5, length.out = 100)  # Symmetric color scale
+
+# Combine and prepare the data
+heatmap_data <- rbind(WT_5hr_df, NC_5hr_df, s4_5hr_df) %>%
+  filter(Gene %in% sig_genes) %>%
+  mutate(
+    # Add significance stars
+    sig_star = ifelse(padj < 0.001, "***",
+                     ifelse(padj < 0.01, "**",
+                            ifelse(padj < 0.05, "*", ""))),
+    # Order genes by average absolute LFC (REVERSED - most responsive at TOP)
+    Gene = factor(Gene, levels = heatmap_data %>%
+                   group_by(Gene) %>%
+                   summarize(mean_abs_lfc = mean(abs(log2FoldChange))) %>%
+                   arrange(mean_abs_lfc) %>%  # Changed from desc() to ascending
+                   pull(Gene))  # Added rev() to reverse the order
+  )
+
+# Set symmetric color limits based on max absolute LFC
+lfc_limit <- max(abs(heatmap_data$log2FoldChange), na.rm = TRUE) * 1.1
+# Calculate optimal dimensions based on your data
+n_genes <- length(unique(heatmap_data$Gene))
+n_conditions <- length(unique(heatmap_data$GenoType))
+
+# Set your target dimensions (in inches)
+fig_width <- 10 # Your specified width
+fig_height <- 20 # Your specified height
+
+# Calculate optimal tile aspect ratio
+tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
+
+# Create the enhanced heatmap
+l2f_heatmap <- ggplot(heatmap_data, 
+                          aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
+  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
+  coord_fixed(ratio = tile_aspect_ratio) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  ) 
+print(l2f_heatmap)
+# Save the plot
+ggsave("../Figures/enhanced_heatmap.png", 
+       l2f_heatmap, 
+       dpi = 600, 
+       height = fig_height, 
+       width = fig_width)
+```
+```{r, fig.height=12, fig.width=6}
+# 1. Sort by Maximum LFC
+max_lfc_order <- heatmap_data %>%
+  group_by(Gene) %>%
+  summarize(max_lfc = max(abs(log2FoldChange))) %>%
+  arrange(max_lfc) %>%
+  pull(Gene) %>%
+  rev()
+
+# 2. Hierarchical Clustering
+lfc_matrix <- heatmap_data %>%
+  select(Gene, GenoType, log2FoldChange) %>%
+  pivot_wider(names_from = GenoType, values_from = log2FoldChange) %>%
+  column_to_rownames("Gene") %>%
+  as.matrix()
+cluster_order <- rownames(lfc_matrix)[hclust(dist(lfc_matrix))$order]
+
+# 3. Functional Groups (example)
+set.seed(123)
+gene_groups <- data.frame(
+  Gene = unique(heatmap_data$Gene),
+  Function = sample(c("DNA Repair","Metabolism","Signaling"), 
+                   length(unique(heatmap_data$Gene)), replace = TRUE)
 )
+
+# 4. Up/Down Regulation
+direction_order <- heatmap_data %>%
+  group_by(Gene) %>%
+  summarize(mean_direction = mean(log2FoldChange)) %>%
+  mutate(direction = ifelse(mean_direction > 0, "Up", "Down")) %>%
+  arrange(direction, desc(abs(mean_direction))) %>%
+  pull(Gene)
+
+# Create comparison plot
+plots <- list()
+
+# Method 1: Max LFC
+plots[[1]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = max_lfc_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile() +
+  ggtitle("Sorted by Maximum LFC")+
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  )
+
+# Method 2: Clustering
+plots[[2]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = cluster_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile() +
+  ggtitle("Cluster Analysis")+
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  )
+
+# Method 3: Functional Groups
+#plots[[3]] <- heatmap_data %>%
+  #left_join(gene_groups, by = "Gene") %>%
+  #mutate(Gene = factor(Gene, levels = gene_groups %>%
+  #                      arrange(Function, desc(abs(log2FoldChange))) %>%
+  #                      pull(Gene))) %>%
+  #ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  #geom_tile() +
+  #facet_grid(Function ~ ., scales = "free_y", space = "free") +
+  #ggtitle("Grouped by Function")
+
+# Method 4: Up/Down Regulation
+plots[[3]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = direction_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile() +
+  ggtitle("Separated by Regulation Direction")+
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  )
+
+# Combine plots
+library(patchwork)
+combined_plot <- wrap_plots(plots, ncol = 2) +
+  plot_annotation(title = "Comparison of Gene Sorting Methods") &
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red") &
+  theme_minimal()
+print(combined_plot)
+# Save
+ggsave("sorting_methods_comparison.png", combined_plot, 
+       width = 14, height = 16, dpi = 300)
+```
+```{r}
+top_hits <- ggplot(var_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap( ~timepoint, scales="free_x" ) +
+  scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill="Log2fold\nChange")
+print(top_hits)
+ggsave("../Figures/varTophitsNC_vs_s47v7.png", top_hits, dpi=600)
 ```
 
-```{r}
-design =~ genotype*timepoint*treatment #~ genotype + timepoint + treatment + genotype:timepoint + genotype:treatment + genotype:timepoint:treatment
-dds <- DESeqDataSet(se, design = design)
-dds <- DESeq(dds)
-rld <- rlog(dds, blind = FALSE)
-resultsNames(dds)
-res_NC_5hr <- results(dds, contrast = list(c("treatmentind.s4.timepoint5")))#("treatment", "ind", "Nind"))
-resultsNames(dds)
-model.matrix(design, as.data.frame(colData(dds)))
-```
-```{r}
-topGene <- rownames(res)[which.max(res$log2FoldChange)]
-plotCounts(dds, gene = topGene, intgroup=c("treatment", "genotype", "timepoint"))
-```
-```{r}
-geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("treatment","genotype", "timepoint"),
-                         returnData = TRUE)
-ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, shape = treatment)) +
-  scale_y_log10() +  geom_beeswarm(cex = 3)
-```
-```{r}
-ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = interaction(genotype, treatment), shape = treatment)) +
-  scale_y_log10() + geom_point(size = 3) + geom_line()
-```
+
+
+
+
 ```{r}
 
 ```

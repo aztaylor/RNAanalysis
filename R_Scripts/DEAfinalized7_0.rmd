@@ -21,6 +21,8 @@ library("glmpca")
 library("ggbeeswarm")
 library("apeglm")
 library("genefilter")
+if (!require("AnnotationHub")) BiocManager::install("AnnotationHub")
+library(AnnotationHub)
 ```
 
 ```{R}
@@ -92,12 +94,7 @@ for (i in 1:length(sample_names)){
   
 }
 ```
-```{r}
-#genotype
-#treatment 
-#timepoint
-#replicate
-```
+
 ```{r}
 samples <- sub("_L00",".",sample_names)
 si_complete <-data.frame(samples=samples,
@@ -139,11 +136,6 @@ se$timepoint %<>% relevel("5")
 se$genotype %<>% relevel("NC")
 ```
 
-
-```{r}
-#round(colSums(assay(se))/1e6, 3)
-
-```
 ```{r}
 design =~ genotype*timepoint*treatment #~ genotype + timepoint + treatment + genotype:timepoint + genotype:treatment + genotype:timepoint:treatment
 
@@ -162,7 +154,6 @@ keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
 dds <- dds[keep,]
 nrow(dds)
 ```
-
 # Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
 ```{r}
 lambda <- 10^seq(from = -1, to = 2, length = 1000)
@@ -408,6 +399,11 @@ ggsave("../Figures/enhanced_heatmap.png",
 ```
 # Now let's retrieve the annotation information for MG1655z1 so we can cluster based on function.
 ```{r}
+library(RCurl)
+library(org.EcK12.eg.db)
+library(AnnotationDbi)
+
+
 # Check current format
 str(heatmap_data$Gene)  # Should show 'chr' not 'factor' or 'numeric'
 
@@ -417,11 +413,10 @@ heatmap_data$Gene <- as.character(heatmap_data$Gene)
 # Remove NA/blank entries
 heatmap_data <- heatmap_data[!is.na(heatmap_data$Gene) & heatmap_data$Gene != "", ]
 
-library(org.EcK12.eg.db)
 
 # Method 1: Using locus tags (b-numbers)
 tryCatch({
-  annotations <- select(org.EcK12.eg.db,
+  annotations <- AnnotationDbi::select(org.EcK12.eg.db,
                       keys = unique(heatmap_data$Gene),  # Unique genes only
                       columns = c("GENENAME", "PATH"), #, "UNIPROT"),
                       keytype = "ALIAS")
@@ -482,19 +477,18 @@ ggplot(heatmap_annotated, aes(x = GenoType, y = DisplayName, fill = log2FoldChan
   labs(
     x = "Genotype",
     y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
+    fill = "Log_2 FC\n(Ind vs Nind)",
     caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
   ) +
   labs(y = "Gene (Annotation)")
 ```
-```{r, fig.height=12, fig.width=6}
+```{r, fig.height=12, fig.width=12}
 # 1. Sort by Maximum LFC
 max_lfc_order <- heatmap_data %>%
   group_by(Gene) %>%
   summarize(max_lfc = max(abs(log2FoldChange))) %>%
   arrange(max_lfc) %>%
-  pull(Gene) %>%
-  rev()
+  pull(Gene)
 
 # 2. Hierarchical Clustering
 lfc_matrix <- heatmap_data %>%
@@ -504,50 +498,28 @@ lfc_matrix <- heatmap_data %>%
   as.matrix()
 cluster_order <- rownames(lfc_matrix)[hclust(dist(lfc_matrix))$order]
 
-# 3. Functional Groups (example)
-set.seed(123)
-gene_groups <- data.frame(
-  Gene = unique(heatmap_data$Gene),
-  Function = sample(c("DNA Repair","Metabolism","Signaling"), 
-                   length(unique(heatmap_data$Gene)), replace = TRUE)
-)
-
 # 4. Up/Down Regulation
 direction_order <- heatmap_data %>%
   group_by(Gene) %>%
   summarize(mean_direction = mean(log2FoldChange)) %>%
   mutate(direction = ifelse(mean_direction > 0, "Up", "Down")) %>%
   arrange(direction, desc(abs(mean_direction))) %>%
+  rev() %>%
+  pull(Gene)
+
+# 5. Variation among GenoTypes
+variation_order <- heatmap_data %>%
+  group_by(Gene) %>%
+  summarize(
+    max_lfc = max(log2FoldChange),
+    min_lfc = min(log2FoldChange),
+    range_lfc = max_lfc - min_lfc  # This measures the variation
+  ) %>%
+  arrange(desc(range_lfc)) %>%  # Sort by range (descending)
   pull(Gene)
 
 # Create comparison plot
 plots <- list()
-
-# Method 1: Max LFC
-plots[[1]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = max_lfc_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile() +
-  ggtitle("Sorted by Maximum LFC")+
-  labs(
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  )
-
-# Method 2: Clustering
-plots[[2]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = cluster_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile() +
-  ggtitle("Cluster Analysis")+
-  labs(
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  )
 
 # Set your target dimensions (in inches)
 fig_width <- 10 # Your specified width
@@ -556,9 +528,68 @@ fig_height <- 20 # Your specified height
 # Calculate optimal tile aspect ratio
 tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
 
+desired_genotype_order <- c("WT", "NC", "s4")
+
+# Method 1: Max LFC
+plots[[1]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = max_lfc_order),
+         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile(color = "white", width = 0.95, height = 0.95) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    title = "Max LFC",
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  )
+
+# Method 2: Clustering
+plots[[2]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = cluster_order),
+         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
+  geom_tile(color = "white", width = 0.95, height = 0.95) +
+  coord_fixed(ratio = tile_aspect_ratio) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    title = "Hierarchical Clustering",
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  )
+
 # Create the enhanced heatmap
-plots[[3]] <- ggplot(heatmap_data, 
-                          aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
+plots[[3]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = variation_order),
+         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
+  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
   geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
   coord_fixed(ratio = tile_aspect_ratio) +
   geom_text(aes(label = sig_star), 
@@ -575,29 +606,36 @@ plots[[3]] <- ggplot(heatmap_data,
     plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
   ) +
   labs(
+    title = " Max Mean LFC",
     x = "Genotype",
     y = "Gene",
     fill = "Log2FC\n(Ind vs Nind)",
     caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
   ) 
 
-plots[[4]] <- heatmap_data %>%
-  left_join(gene_groups, by = "Gene") %>%
-  mutate(Gene = factor(Gene, levels = gene_groups %>%
-                        arrange(Function, desc(abs(log2FoldChange))) %>%
-                        pull(Gene))) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile() +
-  facet_grid(Function ~ ., scales = "free_y", space = "free") +
-  ggtitle("Grouped by Function")
 
 # Method 4: Up/Down Regulation
-plots[[5]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = direction_order)) %>%
+plots[[4]] <- heatmap_data %>%
+  mutate(Gene = factor(Gene, levels = direction_order),
+         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
   ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile() +
-  ggtitle("Separated by Regulation Direction")+
+  geom_tile(color = "white", width = 0.95, height = 0.95) +
+  coord_fixed(ratio = tile_aspect_ratio) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
   labs(
+    title = "Up/Down Regulation",
     x = "Genotype",
     y = "Gene",
     fill = "Log2FC\n(Ind vs Nind)",
@@ -615,6 +653,7 @@ print(combined_plot)
 ggsave("sorting_methods_comparison.png", combined_plot, 
        width = 14, height = 16, dpi = 300)
 ```
+
 ```{r}
 top_hits <- ggplot(var_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
   geom_tile() +

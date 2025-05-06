@@ -267,7 +267,7 @@ ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = inter
 
 ```{r, fig.height=20, fig.width=10}}
 font = "Helvetica"
-timep = "18"
+timep = "5"
 ntopgenes = 100
 pthreshold = 0.1
 design =~ genotype + treatment + timepoint + genotype:treatment + genotype:timepoint + treatment:timepoint + genotype:treatment:timepoint
@@ -392,10 +392,9 @@ divergence_data <- heatmap_data %>%
   mutate(
     s4_vs_WT = abs(`s4` - `WT`),  # Absolute difference from WT baseline
     s4_vs_NC = abs(`NC` - `WT`),  # Absolute difference from NC control
-    combined_divergence = s4_vs_WT + s4_vs_NC  # Total divergence score
+    combined_divergence = abs(s4_vs_WT - s4_vs_NC)  # Total divergence score
   ) %>%
-  arrange(combined_divergence) %>% # Sort by highest divergence
-  rev()
+  arrange(desc(combined_divergence)) # Sort by highest divergence
 
 # Result contains:
 # Gene | WT | NC | s4 | s4_vs_WT | s4_vs_NC | combined_divergence
@@ -416,7 +415,7 @@ gene_order <- top_n_genes
 heatmap_data_sorted <- heatmap_data %>%
   filter(Gene %in% gene_order) %>%
   mutate(Gene = factor(Gene, levels = gene_order, exclude=NULL)) %>%
-  arrange(Gene) 
+  arrange(Gene, .by_group = TRUE) 
 
 # 1. Calculate WT baseline values (per gene)
 wt_baseline <- heatmap_data_sorted %>%
@@ -430,7 +429,8 @@ heatmap_relative <- heatmap_data_sorted %>%
   inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
   mutate(
     relative_l2fc = log2FoldChange - wt_l2fc,  # Calculate difference from WT
-    genotype = paste0(genotype, "-WT")  # Update genotype labels
+    genotype = paste0(genotype, "-WT"),  # Update genotype labels
+    Gene = factor(Gene, levels = gene_order, exclude=NULL)  # Ensure consistent ordering)
   ) %>%
   select(-log2FoldChange, -wt_l2fc) %>%  # Remove original columns
   rename(log2FoldChange = relative_l2fc)  # Rename for consistency
@@ -444,9 +444,9 @@ heatmap_relative <- heatmap_relative %>%
   
 ggplot(heatmap_data_sorted, aes(
     x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE), 
-    y = factor(Gene, levels = top_n_genes))
+    y = fct_rev(Gene))
 ) +
-  scale_y_discrete(limits = top_n_genes) +
+  scale_y_discrete(limits = levels(rev(gene_order))) +
   geom_tile(aes(fill = log2FoldChange)) +
   #facet_grid(~ timepoint, scales = "free_x") +
   scale_fill_gradient2(
@@ -464,42 +464,27 @@ ggplot(heatmap_data_sorted, aes(
   )
 ```
 # Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
-```{r, fig.width=15, fig.height=20}
-relative_data <- heatmap_relative %>%
-  filter(genotype %in% c("NC", "s4")) %>%
-  inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
-  mutate(
-    relative_l2fc = log2FoldChange - wt_l2fc,
-    genotype = paste0(genotype, "-WT")
-  ) %>%
-  select(-log2FoldChange, -wt_l2fc) %>%
-  rename(log2FoldChange = relative_l2fc)
-
-relative_heatmap <- ggplot(relative_data, 
-                          aes(x = genotype, y = Gene, fill = log2FoldChange)) + 
-  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
-  coord_fixed(ratio = tile_aspect_ratio) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
+```{r, fig.width=5, fig.height=10}
+ggplot(heatmap_relative, aes(
+    x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE), 
+    y = fct_rev(Gene))
+) +
+  scale_y_discrete(limits = rev(top_n_genes)) +
+  geom_tile(aes(fill = log2FoldChange)) +
+  #facet_grid(~ timepoint, scales = "free_x") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    #limits = c(-20, 20)  # Adjust based on your data
   ) +
-  theme_minimal(base_family = "Helvetica") +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+    axis.text.x = element_text(angle = 0, hjust = 1, size = 8),
+    strip.text = element_text(size = 10)
   ) +
   labs(
-    x = "Genotype",
+    x = "Strain + IPTG",
     y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  ) 
-
-print(l2f_heatmap)
+    fill = expression(paste(log[2], "FC (vs WT -IPTG T1)"))
+  )
 
 heatmap_data_sorted %>%
   filter(genotype %in% c("NC", "s4")) %>%
@@ -539,628 +524,6 @@ table(temp_combined$genotype, temp_combined$treatment)
 
 # 3. Check FINAL output
 table(heatmap_data$genotype, heatmap_data$treatment)
-```
-```{r}
-# Create the enhanced heatmap
-l2f_heatmap <- ggplot(heatmap_data, 
-                          aes(x = genotype, y = Gene, fill = log2FoldChange)) + 
-  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
-  coord_fixed(ratio = tile_aspect_ratio) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  ) 
-print(l2f_heatmap)
-# Save the plot
-ggsave("../Figures/enhanced_heatmap_v8.png", 
-       l2f_heatmap, 
-       dpi = 600, 
-       height = fig_height, 
-       width = fig_width)
-```
-# Now let's retrieve the annotation information for MG1655z1 so we can cluster based on function.
-```{r}
-library(RCurl)
-library(org.EcK12.eg.db)
-library(AnnotationDbi)
-
-
-# Check current format
-str(heatmap_data$Gene)  # Should show 'chr' not 'factor' or 'numeric'
-
-# Force convert to character if needed
-heatmap_data$Gene <- as.character(heatmap_data$Gene)
-
-# Remove NA/blank entries
-heatmap_data <- heatmap_data[!is.na(heatmap_data$Gene) & heatmap_data$Gene != "", ]
-
-
-# Method 1: Using locus tags (b-numbers)
-tryCatch({
-  annotations <- AnnotationDbi::select(org.EcK12.eg.db,
-                      keys = unique(heatmap_data$Gene),  # Unique genes only
-                      columns = c("GENENAME", "PATH"), #, "UNIPROT"),
-                      keytype = "ALIAS")
-}, error = function(e) {
-  message("Error with ALIAS keytype. Trying alternative methods...")
-  
-  # Method 2: Try ENTREZID if genes are numeric
-  if(all(grepl("^\\d+$", heatmap_data$Gene))) {
-    annotations <- select(org.EcK12.eg.db,
-                        keys = unique(heatmap_data$Gene),
-                        columns = c("GENENAME", "PATH"),
-                        keytype = "ENTREZID")
-  } 
-  # Method 3: Try SYMBOL (common gene names)
-  else {
-    annotations <- select(org.EcK12.eg.db,
-                        keys = unique(heatmap_data$Gene),
-                        columns = c("ORF", "PATH"),
-                        keytype = "SYMBOL")
-  }
-})
-
-# Check if any annotations were found
-if(nrow(annotations) == 0) {
-  stop("No annotations found. Verify your gene IDs match the database.")
-}
-heatmap_annotated <- heatmap_data %>%
-  left_join(annotations, by = c("Gene" = "ALIAS")) %>%  # Adjust "ALIAS" to your keytype
-  mutate(
-    DisplayName = case_when(
-      !is.na(GENENAME) ~ paste0(Gene, "|", GENENAME),
-      !is.na(PATH) ~ paste0(Gene, "|", PATH),
-      TRUE ~ Gene
-    )
-  )
-
-library(ggplot2)
-
-# Calculate dynamic sizing
-n_genes <- length(unique(heatmap_annotated$Gene))
-gene_height <- max(2, 10 - n_genes/15)  # Adjust text size based on gene count
-
-ggplot(heatmap_annotated, aes(x = GenoType, y = DisplayName, fill = log2FoldChange)) +
-  geom_tile(width = 0.95, height = 0.95) +
-   geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars +
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log_2 FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  ) +
-  labs(y = "Gene (Annotation)")
-```
-```{r, fig.height=12, fig.width=12}
-# 1. Sort by Maximum LFC
-max_lfc_order <- heatmap_data %>%
-  group_by(Gene) %>%
-  summarize(max_lfc = max(abs(log2FoldChange))) %>%
-  arrange(max_lfc) %>%
-  pull(Gene)
-
-# 2. Hierarchical Clustering
-lfc_matrix <- heatmap_data %>%
-  select(Gene, GenoType, log2FoldChange) %>%
-  pivot_wider(names_from = GenoType, values_from = log2FoldChange) %>%
-  column_to_rownames("Gene") %>%
-  as.matrix()
-cluster_order <- rownames(lfc_matrix)[hclust(dist(lfc_matrix))$order]
-
-# 4. Up/Down Regulation
-direction_order <- heatmap_data %>%
-  group_by(Gene) %>%
-  summarize(mean_direction = mean(log2FoldChange)) %>%
-  mutate(direction = ifelse(mean_direction > 0, "Up", "Down")) %>%
-  arrange(direction, desc(abs(mean_direction))) %>%
-  rev() %>%
-  pull(Gene)
-
-# 5. Variation among GenoTypes
-variation_order <- heatmap_data %>%
-  group_by(Gene) %>%
-  summarize(
-    max_lfc = max(log2FoldChange),
-    min_lfc = min(log2FoldChange),
-    range_lfc = max_lfc - min_lfc  # This measures the variation
-  ) %>%
-  arrange(desc(range_lfc)) %>%  # Sort by range (descending)
-  pull(Gene)
-
-# Create comparison plot
-plots <- list()
-
-# Set your target dimensions (in inches)
-fig_width <- 10 # Your specified width
-fig_height <- 20 # Your specified height
-
-# Calculate optimal tile aspect ratio
-tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
-
-desired_genotype_order <- c("WT", "NC", "s4")
-
-# Method 1: Max LFC
-plots[[1]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = max_lfc_order),
-         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile(color = "white", width = 0.95, height = 0.95) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    title = "Max LFC",
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  )
-
-# Method 2: Clustering
-plots[[2]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = cluster_order),
-         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile(color = "white", width = 0.95, height = 0.95) +
-  coord_fixed(ratio = tile_aspect_ratio) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    title = "Hierarchical Clustering",
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  )
-
-# Create the enhanced heatmap
-plots[[3]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = variation_order),
-         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
-  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
-  coord_fixed(ratio = tile_aspect_ratio) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    title = " Max Mean LFC",
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  ) 
-
-
-# Method 4: Up/Down Regulation
-plots[[4]] <- heatmap_data %>%
-  mutate(Gene = factor(Gene, levels = direction_order),
-         GenoType = factor(GenoType, levels = desired_genotype_order)) %>%
-  ggplot(aes(x = GenoType, y = Gene, fill = log2FoldChange)) +
-  geom_tile(color = "white", width = 0.95, height = 0.95) +
-  coord_fixed(ratio = tile_aspect_ratio) +
-  geom_text(aes(label = sig_star), 
-            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
-  scale_fill_distiller(
-    palette = "RdGy",
-    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_family = "Helvetica") +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-    axis.text.y = element_text(size = 8),
-    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
-  ) +
-  labs(
-    title = "Up/Down Regulation",
-    x = "Genotype",
-    y = "Gene",
-    fill = "Log2FC\n(Ind vs Nind)",
-    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
-  )
-
-# Combine plots
-library(patchwork)
-combined_plot <- wrap_plots(plots, ncol = 2) +
-  plot_annotation(title = "Comparison of Gene Sorting Methods") &
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red") &
-  theme_minimal()
-print(combined_plot)
-# Save
-ggsave("sorting_methods_comparison.png", combined_plot, 
-       width = 14, height = 16, dpi = 300)
-```
-
-```{r}
-top_hits <- ggplot(var_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
-  geom_tile() +
-  scale_fill_distiller(palette="RdGy") +
-  theme(axis.text.x = element_text(family=font, size=fsize)) +
-  theme(axis.text.y = element_text(family=font, size=fsize)) +
-  coord_cartesian(clip = "off") +
-  facet_wrap( ~timepoint, scales="free_x" ) +
-  scale_x_discrete(labels = columns) +
-  xlab("Treatment") +
-  ylab("Gene")+
-  labs(fill="Log2fold\nChange")
-print(top_hits)
-ggsave("../Figures/varTophitsNC_vs_s47v7.png", top_hits, dpi=600)
-```
-
-
-
-
-
-```{r}
-
-```
-
-```{r}
-dds <- DESeq(dds)
-rld <- rlog(dds, blind = FALSE)
-resultsNames(dds)
-```
-```{r}
-res <- lfcShrink(dds, coef="treatment_ind_vs_Nind" , type="apeglm")
-plotMA(res, ylim = c(-10, 10))
-res.noshr <- results(dds, name="timepoint_18_vs_5" )
-plotMA(res.noshr, ylim = c(-10, 10))
-plotMA(res, ylim = c(-10,10))
-topGene <- rownames(res)[which.min(res$padj)]
-with(res[topGene, ], {
-  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
-  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
-})
-hist(res.noshr$pvalue[res.noshr$baseMean > 1], breaks = 0:20/20,
-     col = "grey50", border = "white")
-```
-```{r}
-ddsNR <- DESeqDataSet(se, design = design)
-```
-
-```{r, fig.height=12, fig.width=7}
-font = "Helvetica"
-counts_df <- data.frame(counts(ddsNR))
-counts_df <- counts_df[rowSums(counts_df >= 10) >= 4, ]
-
-counts_df <- log(counts_df,10)
-
-var_counts <- apply(counts_df, MARGIN=1, FUN= var)
-var_counts_df = data.frame(Var=var_counts)
-rownames(var_counts_df) <- rownames(counts_df)
-
-varCounts_l2f_df <- counts_df[order(var_counts_df$Var, decreasing=FALSE), , drop=FALSE]
-varCounts_l2f_df
-
-col_names = colnames(varCounts_l2f_df)
-col_names
-cleaned_col_names <- sub(".*ATEY090523\\.", "", col_names)
-cleaned_col_names
-
-# Extract the first number and save to a new array
-timepoint <- sub(".*_(\\d+).*", "\\1", cleaned_col_names)
-timepoints <- paste("timepointpoint: ", timepoint, "hr.")
-
-# Combine the second number (if present) with the word portion
-processed_sample <- sub("^(.*?)_(\\d+)(\\..*)?$", "\\1\\3", cleaned_col_names)
-processed_sample
-
-varCounts_l2f_df <- varCounts_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
-varCounts_l2f_df <- varCounts_l2f_df %>%
-  mutate(
-    timepoint = paste("timepointpoint: ", as.numeric(str_extract(colname, "(?<=_)[0-9]+")), "hr.")  # Extract the number after the underscore and convert to numeric
-  )
-columns <- c("Non-Targeting\ngRNA", "Targeting\ngRNA", "Non-Targeting\ngRNA", "Targeting\ngRNA")
-
-varCounts_l2f_df$colname  <- factor(varCounts_l2f_df$colname, levels=unique(varCounts_l2f_df$colname))
-varCounts_l2f_df$timepoint <- factor(varCounts_l2f_df$timepoint, levels=unique(varCounts_l2f_df$timepoint))
-varCounts_l2f_df
-varCounts_l2f_df$rowname<-factor(varCounts_l2f_df$rowname, levels=unique(varCounts_l2f_df$rowname))
-
-fsize = 5
-
-Counts_top_hits <- ggplot(varCounts_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
-  geom_tile() +
-  scale_fill_distiller(palette="RdGy") +
-  theme(axis.text.x = element_text(angle=270, family=font, size=fsize)) +
-  theme(axis.text.y = element_text(family=font, size=fsize)) +
-  coord_cartesian(clip = "off") +
-  facet_wrap( ~timepoint, scales="free_x" ) +
-  scale_x_discrete(labels = unique(processed_sample)) +
-  xlab("Treatment") +
-  ylab("Gene")+
-  labs(fill="Log10Counts")
-print(Counts_top_hits)
-ggsave("../Figures/CountsTopHits.png", Counts_top_hits, dpi=600)
-```
-
-
-
-```{r, fig.height=7, fig.width=7}
-n_topgenes = 50
-topVarGenes <- head(order(rowVars(assay(rld)), decreasing = TRUE), n_topgenes)
-mat  <- assay(rld)[ topVarGenes, ]
-mat
-col_order = c("ATEY090523-WT_1",
-              "ATEY090523-WT_ind_1",
-              "ATEY090523-NC_1",
-              "ATEY090523-NC_ind_1",
-              "ATEY090523-s4_1",
-              "ATEY090523-s4_ind_1",
-              "ATEY090523-WT_3",
-              "ATEY090523-WT_ind_3",
-              "ATEY090523-NC_3",
-              "ATEY090523-NC_ind_3",
-              "ATEY090523-s4_3",
-              "ATEY090523-s4_ind_3"
-)
-col_names = c("WT 5 hr.",
-              "WT Induced 5 hr.",
-              "NC 5 hr.", 
-              "NC Induced 5 hr.",
-              "s4 5 hr.",
-              "s4 Induced 5 hr.",
-              "WT 18 hr.",
-              "WT Induced 18 hr.",
-              "NC 18 hr.", 
-              "NC Induced 18 hr.",
-              "s4 18 hr.",
-              "s4 Induced 18 hr."
-)
-mat <- mat[,col_order]
-mat  <- mat - rowMeans(mat)
-anno <- as.data.frame(colData(vsd)[, c("genotype","treatment", "timepoint")])
-pheatmap(mat, 
-         annotation_col = anno,
-         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(100),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=FALSE,
-         cluster_rows =FALSE,
-         labels_col = col_names
-)
-```
-```{r, fig.height=7, fig.width=7}
-res <- results(dds, contrast = c("treatment", "ind", "Nind"))
-res
-
-resOrdered <- res[order(res$log2FoldChange), ]
-top_genes <- head(resOrdered, n_topgenes)
-
-inds <- rownames(top_genes)
-mat <- assay(rld)[inds,]
-
-col_order = c("ATEY090523-WT_1",
-              "ATEY090523-WT_ind_1",
-              "ATEY090523-NC_1",
-              "ATEY090523-NC_ind_1",
-              "ATEY090523-s4_1",
-              "ATEY090523-s4_ind_1",
-              "ATEY090523-WT_3",
-              "ATEY090523-WT_ind_3",
-              "ATEY090523-NC_3",
-              "ATEY090523-NC_ind_3",
-              "ATEY090523-s4_3",
-              "ATEY090523-s4_ind_3"
-)
-col_names = c("WT 5 hr.",
-              "WT Induced 5 hr.",
-              "NC 5 hr.", 
-              "NC Induced 5 hr.",
-              "s4 5 hr.",
-              "s4 Induced 5 hr.",
-              "WT 18 hr.",
-              "WT Induced 18 hr.",
-              "NC 18 hr.", 
-              "NC Induced 18 hr.",
-              "s4 18 hr.",
-              "s4 Induced 18 hr."
-)
-mat <- mat[,col_order]
-mat  <- mat - rowMeans(mat)
-anno <- as.data.frame(colData(vsd)[, c("genotype","treatment", "timepoint")])
-log2FC_heatmap <- pheatmap(mat, 
-         annotation_col = anno,
-         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(100),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=FALSE,
-         cluster_rows=FALSE,
-         labels_col = col_names
-)
-resOrdered
-
-```
-```{r, fig.height=20, fig.width=7}
-contrast = list("treatment_ind_vs_Nind")
-resNC <- results(dds, contrast = contrast)#("genotypeNC.timepoint18.treatmentind"))
-ress4 <- results(dds, contrast = contrast)#("genotypeNC.timepoint18.treatmentind"))
-sig_resNC <- subset(resNC, padj < 0.01)
-sig_ress4 <- subset(ress4, padj < 0.01)
-
-l2f_NC = as.data.frame(sig_resNC$log2FoldChange)
-rownames(l2f_NC) <- rownames(sig_resNC)
-colnames(l2f_NC) <- ("WT 5hr untreated vs. NC 18hr treated")
-
-l2f_s4 <- as.data.frame(sig_ress4$log2FoldChange)
-rownames(l2f_s4) <- rownames(sig_ress4)
-colnames(l2f_s4) <- ("WT 5hr untreated vs. s8 18hr treated")
-
-l2f_matrix <- cbind(l2f_NC, l2f_s4)
-
-# Generate heatmap
-pheatmap(l2f_matrix, 
-         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(50),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=FALSE,
-         cluster_rows=FALSE,
-)
-
-```
-```{r, fig.height=25, fig.width=15}
-coldata5 = coldata[coldata$timepoint == 5,]
-coldata18 = coldata[coldata$timepoint == 18,]
-
-coldata5 <-subset(coldata5, select = -timepoint)
-coldata18 <- subset(coldata18, select = -timepoint)
-se5 <- tximeta(coldata5)
-se18 <- tximeta(coldata18)
-coldata5
-
-se5$treatment <- relevel(factor(se5$treatment), ref = "Nind") # Nind is the base line to compare to.
-se5$genotype <- relevel(factor(se5$genotype), ref = "NC") 
-se18$treatment <- relevel(factor(se18$treatment), ref = "Nind") 
-se18$genotype <- relevel(factor(se18$genotype), ref = "NC") 
-
-design = ~ genotype + treatment + genotype:treatment
-dds5 <- DESeqDataSet(se5, design = design)
-dds18 <- DESeqDataSet(se18, design = design)
-
-dds5 <- DESeq(dds5)
-dds18 <- DESeq(dds18)
-
-rld5 <- rlog(dds5, blind = FALSE)
-rld18 <- rlog(dds18, blind = FALSE)
-
-resultsNames(dds5)
-resultsNames(dds18)
-
-contrast = list("treatment_ind_vs_Nind")
-res5s4 <- results(dds5, contrast = contrast)
-res18s4 <- results(dds18, contrast = contrast)
-
-
-n_topgenes = 4577
-n_topVarGenes = 75
-topVarGenes <- head(order(rowVars(assay(dds)), decreasing = TRUE), n_topgenes)
-
-topgenes5s4 <- rownames(head(res5s4[order(res5s4$log2FoldChange, decreasing = TRUE),], n_topgenes))
-topgenes18s4 <- rownames(head(res18s4[order(res18s4$log2FoldChange, decreasing = TRUE),], n_topgenes))
-
-
-
-sig_res5s4 <- rownames(subset(res5s4, padj < 0.01))
-sig_res18s4 <- rownames(subset(res18s4, padj < 0.01))
-
-l2f_5_s4 <- as.data.frame(res5s4$log2FoldChange)
-rownames(l2f_5_s4) <- rownames(res5s4)
-l2f_5_s4 <- l2f_5_s4[topgenes5s4, , drop=FALSE]
-l2f_5_s4$rownames <- topgenes5s4
-#colnames("WT 5hr untreated vs. st 18hr treated")
-
-l2f_18_s4 <- as.data.frame(res18s4$log2FoldChange)
-rownames(l2f_18_s4) <- rownames(res18s4)
-l2f_18_s4 <- l2f_18_s4[topgenes18s4, , drop=FALSE]
-l2f_18_s4$rownames <- topgenes18s4
-#colnames("WT 5hr untreated vs. st 18hr treated")
-
-l <- list(l2f_5_s4, l2f_18_s4)
-l2f_df <- Reduce(function(x, y) merge(x, y, by="rownames", all=T), l)
-rownames(l2f_df) <- l2f_df$rownames
-l2f_df <- l2f_df[,-1]
-l2f_raw_df <- data.frame(l2f_df)
-l2f_raw_df[is.na(l2f_raw_df)]<-0
-l2f_df <- na.omit(l2f_df)
-colnames(l2f_raw_df) <- c("Targeting5hr", "Targeting18hr")
-colnames(l2f_df) <- c("Targeting5hr", "Targeting18hr")
-l2f_df_tv <-l2f_raw_df[topVarGenes, ] # Total Variance accross samples.
-l2f_df_5_s4 <- l2f_raw_df[order(abs(l2f_df$Targeting5hr), decreasing = TRUE), , drop=FALSE]
-
-clusterRows <- TRUE
-clusterCols <- FALSE
-
-# Generate heatmap
-phm <- pheatmap(l2f_raw_df, 
-         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(n_topgenes),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=clusterCols,
-         cluster_rows=clusterRows,
-)
-
-phm_tv <- pheatmap(l2f_df_tv, 
-         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(n_topgenes),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=clusterCols,
-         cluster_rows=clusterRows,
-)
-phm_5_s4 <- pheatmap(l2f_df_5_s4, 
-         color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdGy")))(n_topgenes),
-         angle_col = 315,
-         width = fig.width,
-         height = fig.height,
-         cluster_cols=clusterCols,
-         cluster_rows=clusterRows,
-)
-
-grid.arrange(as.grob(phm), as.grob(phm_tv), as.grob(phm_5_s4), ncol=3)
-
 ```
 
 ```{r}

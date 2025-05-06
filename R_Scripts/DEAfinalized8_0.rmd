@@ -265,8 +265,11 @@ ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = inter
 ```
 
 
-```{r, fig.height=12, fig.width=7}}
+```{r, fig.height=20, fig.width=10}}
 font = "Helvetica"
+timep = "18"
+ntopgenes = 100
+pthreshold = 0.1
 design =~ genotype + treatment + timepoint + genotype:treatment + genotype:timepoint + treatment:timepoint + genotype:treatment:timepoint
 #design =~ genotype + timepoint + treatment
 
@@ -279,68 +282,71 @@ resultsNames(dds)
 gene_variance <- apply(assay(rld), 1, var)  # Variance per gene
 
 # Sort genes by variance (descending) and take top 50
-top_50_genes <- names(sort(gene_variance, decreasing = TRUE)[1:50])
+top_genes <- names(sort(gene_variance, decreasing = TRUE)[1:50])
+# Now create the dataframe for the heatmap
 
-# Plasmid effect at T1 (NC -IPTG vs. WT -IPTG)
-res_NC_vs_WT_T1 <- results(dds, contrast = c("genotype", "NC", "WT"))
+# Example: Extract and combine results for all 12 groups
+heatmap_data <- bind_rows(
+  ###########################################################
+  # Baseline effect with induction
+  ###########################################################
+  
+  # Baseline (WT -treatment 5hr)
+  results(dds, name = "Intercept") %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "WT", treatment = "ind", timepoint = timep, Comparison = "Baseline"
+           ),
+  
+  ##########################################################################
+  # Plasmid (non-functional) effect with and without induction and leakyniss
+  ##########################################################################
 
-# Induction effect at T2 (s4 +IPTG vs. NC +IPTG)
-res_s4_vs_NC_T2 <- results(dds, list(
-  c("genotype_s4_vs_WT", "treatment_ind_vs_Nind", "genotypes4.treatmentind"),
-  c("genotype_NC_vs_WT", "treatment_ind_vs_Nind", "genotypeNC.treatmentind")
-))
-
-# Time effect in s4 +IPTG (T2 vs. T1)
-res_s4_T2_vs_T1 <- results(dds, contrast = list(
-  "timpoint_T2_vs_T1", "genotpes4.timpoint18", "treatmentind.timpoint18", "genotypes4.treatmentind.timpoint18"
-))
-
-# Filtering
-rRNAgenes <- c("rrl*", "rrs*")
-# significant genes for Wild Type, Negative control, and s4 at 5 hr.
-sig_genes <- unique(c(
-  rownames(subset(res_NC_vs_WT_T1, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_NC_vs_WT_T1)))),
-  rownames(subset(res_s4_vs_NC_T2, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_s4_vs_NC_T2)))),
-  rownames(subset(res_s4_ind_T2_vs_t2, padj < 0.05 & abs(log2FoldChange) > 1 & !grepl(rRNAgenes, rownames(res_s4_ind_T2_vs_t2))))
-))
-
-# Now create data frames from each of the results and
-# and assign genes and genotypes data.
-WT_5hr_df <- data.frame(
-  Gene = rownames(res_s4_T2_vs_t2),
-  log2FoldChange = res_s4_T2_vs_t2$log2FoldChange,
-  padj = res_s4_ind_T2_vs_t2$padj,
-  GenoType = "WT"
-)
-NC_5hr_df <- data.frame(
-  Gene = rownames(res_NC_vs_WT_T1),
-  log2FoldChange = res_NC_vs_WT_T1$log2FoldChange,
-  padj = res_NC_vs_WT_T1$padj,
-  GenoType = "NC"
-)
-s4_5hr_df <- data.frame(
-  Gene = rownames(res_s4_vs_NC_T2),
-  log2FoldChange = res_s4_vs_NC_T2$log2FoldChange,
-  padj = res_s4_vs_NC_T2_ind$padj,
-  GenoType = "s4"
-)
-
-
-# Combine and prepare the data
-heatmap_data <- rbind(WT_5hr_df, NC_5hr_df, s4_5hr_df) %>%
-  filter(Gene %in% sig_genes) %>%
+  # NC -treatment 5hr (non-functional effector leakiness)
+  results(dds, list(
+  c("genotype_NC_vs_WT", "treatment_ind_vs_Nind",
+    "genotypeNC.treatmentind", "timepoint_18_vs_5",
+    "genotypeNC.timepoint18", "treatmentind.timepoint18",
+    "genotypeNC.treatmentind.timepoint18")
+    )) %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "NC", treatment = "ind", timepoint = timep, Comparison = "NC_IPTG_WT"
+           ),
+  
+  ###########################################################
+  # Functional effector with and without induction
+  ###########################################################
+    # s4 +treatment 18
+  results(dds, contrast = list(
+    c("genotype_s4_vs_WT", "treatment_ind_vs_Nind", "genotypes4.treatmentind", "timepoint_18_vs_5",
+      "genotypes4.timepoint18", "treatmentind.timepoint18",
+      "genotypes4.treatmentind.timepoint18"))) %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "s4", treatment = "ind", timepoint = timep, Comparison = "s4_IPTG_T2"
+           ),
+    
+) %>%
+  select(Gene, genotype, treatment, timepoint, log2FoldChange, padj) %>%
   mutate(
-    # Add significance stars
-    sig_star = ifelse(padj < 0.001, "***",
-                     ifelse(padj < 0.01, "**",
-                            ifelse(padj < 0.05, "*", ""))),
-    # Order genes by average absolute LFC (REVERSED - most responsive at TOP)
-    Gene = factor(Gene, levels = heatmap_data %>%
-                   group_by(Gene) %>%
-                   summarize(mean_abs_lfc = mean(abs(log2FoldChange))) %>%
-                   arrange(mean_abs_lfc) %>%  # Changed from desc() to ascending
-                   pull(Gene))  # Added rev() to reverse the order
+    sig_star = case_when(
+      padj < 0.001 ~ "***",
+      padj < 0.01 ~ "**",
+      padj < 0.1 ~ "*",
+      TRUE ~ ""
+    ),
+    # Force factor levels for plotting
+    genotype = factor(genotype, levels = c("WT", "NC", "s4")),
+    treatment = factor(treatment, levels = c("Nind", "ind")),
+    timepoint = factor(timepoint, levels = c("5", "18"))
   )
+
+heatmap_data <- heatmap_data %>%
+  dplyr::filter(
+    !if_any(c(log2FoldChange, padj), is.na),  # Keep rows where these cols are non-NA
+    padj < pthreshold  # Keep rows where these cols are non-zero
+    )
 
 # Set symmetric color limits based on max absolute LFC
 lfc_limit <- max(abs(heatmap_data$log2FoldChange), na.rm = TRUE) * 1.1
@@ -350,14 +356,194 @@ n_conditions <- length(unique(heatmap_data$GenoType))
 
 # Set your target dimensions (in inches)
 fig_width <- 10 # Your specified width
-fig_height <- 20 # Your specified height
+fig_height <- 50 # Your specified height
 
 # Calculate optimal tile aspect ratio
 tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
 
+induction_order <- heatmap_data %>%
+  # Filter to only the groups we want to compare
+  filter(genotype %in% c("s4", "NC"), treatment == "ind", timepoint == timep) %>%
+  # For each gene, calculate the difference between s4 and NC
+  group_by(Gene) %>%
+  summarize(
+    induction_effect = log2FoldChange[genotype == "s4"] - log2FoldChange[genotype == "NC"]
+  ) %>%
+  # Sort by absolute induction effect
+  arrange(desc(abs(induction_effect))) %>%
+  pull(Gene)
+
+
+rRNAgenes <- c("rrl*", "rrs*")
+divergence_data <- heatmap_data %>%
+  filter(
+    (genotype == "WT" & treatment == "Nind" & timepoint == timep) |
+    (genotype == "NC" & treatment == "ind" & timepoint == timep) |
+    (genotype == "s4" & treatment == "ind" & timepoint == timep) | 
+    (!grepl(paste(rRNAgenes, collapse="|"), Gene, ignore.case = TRUE))
+  ) %>%
+  # Spread to wide format
+  pivot_wider(
+    id_cols = Gene,
+    names_from = genotype,
+    values_from = log2FoldChange,
+  ) %>%
+  # Calculate divergence metrics
+  mutate(
+    s4_vs_WT = abs(`s4` - `WT`),  # Absolute difference from WT baseline
+    s4_vs_NC = abs(`NC` - `WT`),  # Absolute difference from NC control
+    combined_divergence = s4_vs_WT + s4_vs_NC  # Total divergence score
+  ) %>%
+  arrange(combined_divergence) %>% # Sort by highest divergence
+  rev()
+
+# Result contains:
+# Gene | WT | NC | s4 | s4_vs_WT | s4_vs_NC | combined_divergence
+
+# Sort data base of the divergence data order.
+top_n_genes <- divergence_data %>%
+  slice_head(n = ntopgenes) %>%  # Get first 20 rows (already sorted by descending divergence)
+  pull(Gene)  # Extract as character vector
+
+# Alternative with explicit sorting:
+top_n_genes <- divergence_data %>%
+  arrange(desc(combined_divergence)) %>%  # Ensure descending order
+  head(ntopgenes) %>%
+  pull(Gene)
+
+gene_order <- top_n_genes
+
+heatmap_data_sorted <- heatmap_data %>%
+  filter(Gene %in% gene_order) %>%
+  mutate(Gene = factor(Gene, levels = gene_order, exclude=NULL)) %>%
+  arrange(Gene) 
+
+# 1. Calculate WT baseline values (per gene)
+wt_baseline <- heatmap_data_sorted %>%
+  filter(genotype == "WT",
+        Gene %in% gene_order) %>%
+  select(Gene, treatment, timepoint, wt_l2fc = log2FoldChange)
+
+# 2. Create relative fold changes (s4-WT and NC-WT)
+heatmap_relative <- heatmap_data_sorted %>%
+  filter(genotype %in% c("NC", "s4")) %>%  # Exclude WT
+  inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
+  mutate(
+    relative_l2fc = log2FoldChange - wt_l2fc,  # Calculate difference from WT
+    genotype = paste0(genotype, "-WT")  # Update genotype labels
+  ) %>%
+  select(-log2FoldChange, -wt_l2fc) %>%  # Remove original columns
+  rename(log2FoldChange = relative_l2fc)  # Rename for consistency
+
+# 3. (Optional) Combine with other annotations
+heatmap_relative <- heatmap_relative %>%
+  left_join(
+    heatmap_data %>% select(Gene, genotype, sig_star),  # Keep significance stars
+    by = c("Gene", "genotype")
+  )
+  
+ggplot(heatmap_data_sorted, aes(
+    x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE), 
+    y = factor(Gene, levels = top_n_genes))
+) +
+  scale_y_discrete(limits = top_n_genes) +
+  geom_tile(aes(fill = log2FoldChange)) +
+  #facet_grid(~ timepoint, scales = "free_x") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    #limits = c(-3, 3)  # Adjust based on your data
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 8),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Strain + IPTG",
+    y = "Gene",
+    fill = "log2FC\n(vs WT -IPTG T1)"
+  )
+```
+# Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
+```{r, fig.width=15, fig.height=20}
+relative_data <- heatmap_relative %>%
+  filter(genotype %in% c("NC", "s4")) %>%
+  inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
+  mutate(
+    relative_l2fc = log2FoldChange - wt_l2fc,
+    genotype = paste0(genotype, "-WT")
+  ) %>%
+  select(-log2FoldChange, -wt_l2fc) %>%
+  rename(log2FoldChange = relative_l2fc)
+
+relative_heatmap <- ggplot(relative_data, 
+                          aes(x = genotype, y = Gene, fill = log2FoldChange)) + 
+  geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
+  coord_fixed(ratio = tile_aspect_ratio) +
+  geom_text(aes(label = sig_star), 
+            color = "black", size = 3, vjust = 0.8) +  # Add significance stars
+  scale_fill_distiller(
+    palette = "RdGy",
+    limits = c(-lfc_limit, lfc_limit),  # Symmetric color scale
+    na.value = "grey90"
+  ) +
+  theme_minimal(base_family = "Helvetica") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(5, 5, 5, 5, "pt") # Tight margins
+  ) +
+  labs(
+    x = "Genotype",
+    y = "Gene",
+    fill = "Log2FC\n(Ind vs Nind)",
+    caption = "Significance: *p<0.05, **p<0.01, ***p<0.001"
+  ) 
+
+print(l2f_heatmap)
+
+heatmap_data_sorted %>%
+  filter(genotype %in% c("NC", "s4")) %>%
+  anti_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
+  count(Gene)  # Genes missing WT baselines
+
+wt_baseline %>% 
+  count(Gene, treatment, timepoint) %>% 
+  filter(n > 1)  # Check for duplicates
+```
+
+```{r}
+# 1. Check intermediate results BEFORE binding
+nc_results <- results(dds, list(c("genotype_NC_vs_WT", "treatment_ind_vs_Nind",
+    "genotypeNC.treatmentind", "timepoint_18_vs_5",
+    "genotypeNC.timepoint18", "treatmentind.timepoint18",
+    "genotypeNC.treatmentind.timepoint18"))) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Gene") %>%
+  mutate(genotype = "NC", treatment = "ind", timepoint = "18")
+
+s4_results <- results(dds, contrast = list(c("genotype_s4_vs_WT", "treatment_ind_vs_Nind", "genotypes4.treatmentind", "timepoint_18_vs_5",
+      "genotypes4.timepoint18", "treatmentind.timepoint18",
+      "genotypes4.treatmentind.timepoint18"
+      ))) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Gene") %>%
+  mutate(genotype = "s4", treatment = "ind", timepoint = "18")
+
+# Verify each component
+table(nc_results$treatment)  # Should show all "ind"
+table(s4_results$treatment)  # Should show all "ind"
+
+# 2. Check AFTER binding but BEFORE any other operations
+temp_combined <- bind_rows(nc_results, s4_results)
+table(temp_combined$genotype, temp_combined$treatment)
+
+# 3. Check FINAL output
+table(heatmap_data$genotype, heatmap_data$treatment)
+```
+```{r}
 # Create the enhanced heatmap
 l2f_heatmap <- ggplot(heatmap_data, 
-                          aes(x = GenoType, y = Gene, fill = log2FoldChange)) + 
+                          aes(x = genotype, y = Gene, fill = log2FoldChange)) + 
   geom_tile(color = "white", width = 0.95, height = 0.95) +#, width = 0.95, height = 0.95) +  # Add white grid lines
   coord_fixed(ratio = tile_aspect_ratio) +
   geom_text(aes(label = sig_star), 
@@ -381,7 +567,7 @@ l2f_heatmap <- ggplot(heatmap_data,
   ) 
 print(l2f_heatmap)
 # Save the plot
-ggsave("../Figures/enhanced_heatmap.png", 
+ggsave("../Figures/enhanced_heatmap_v8.png", 
        l2f_heatmap, 
        dpi = 600, 
        height = fig_height, 
@@ -712,7 +898,7 @@ cleaned_col_names
 
 # Extract the first number and save to a new array
 timepoint <- sub(".*_(\\d+).*", "\\1", cleaned_col_names)
-timepoints <- paste("Timepoint: ", timepoint, "hr.")
+timepoints <- paste("timepointpoint: ", timepoint, "hr.")
 
 # Combine the second number (if present) with the word portion
 processed_sample <- sub("^(.*?)_(\\d+)(\\..*)?$", "\\1\\3", cleaned_col_names)
@@ -721,7 +907,7 @@ processed_sample
 varCounts_l2f_df <- varCounts_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
 varCounts_l2f_df <- varCounts_l2f_df %>%
   mutate(
-    timepoint = paste("Timepoint: ", as.numeric(str_extract(colname, "(?<=_)[0-9]+")), "hr.")  # Extract the number after the underscore and convert to numeric
+    timepoint = paste("timepointpoint: ", as.numeric(str_extract(colname, "(?<=_)[0-9]+")), "hr.")  # Extract the number after the underscore and convert to numeric
   )
 columns <- c("Non-Targeting\ngRNA", "Targeting\ngRNA", "Non-Targeting\ngRNA", "Targeting\ngRNA")
 
@@ -1111,8 +1297,8 @@ ggsave("../Figures/NorTopHits.png", nor_top_hits, dpi=600)
 ```
 
 ```{r}
-x_ann1 <- textGrob("Timepoint: 5hr.", gp=gpar(fontsize=10))
-x_ann2 <- textGrob("Timepoint: 18hr.", gp=gpar(fontsize=10))
+x_ann1 <- textGrob("timepointpoint: 5hr.", gp=gpar(fontsize=10))
+x_ann2 <- textGrob("timepointpoint: 18hr.", gp=gpar(fontsize=10))
 
 subset_sum_df<- data.frame(sort(rowSums(abs(subset_df)), decreasing=FALSE))
 subset_df <- subset_df[rownames(subset_sum_df),]
@@ -1174,8 +1360,8 @@ as_l2f_df <- l2f_df[rownames(abs_sum_df),]
 as_l2f_df <- as_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
 
 as_l2f_df <- as_l2f_df %>% mutate(timepoint = case_when(
-  colname == "Targeting5hr" ~ "Timepoint: 5hr",
-  colname == "Targeting18hr" ~ "Timepoint: 18hr"
+  colname == "Targeting5hr" ~ "timepointpoint: 5hr",
+  colname == "Targeting18hr" ~ "timepointpoint: 18hr"
 ))
 
 as_l2f_df$colname  <- factor(as_l2f_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
@@ -1213,8 +1399,8 @@ var_l2f_df
 var_l2f_df <- var_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
 
 var_l2f_df <- var_l2f_df %>% mutate(timepoint = case_when(
-  colname == "Targeting5hr" ~ "Timepoint: 5hr",
-  colname == "Targeting18hr" ~ "Timepoint: 18hr"
+  colname == "Targeting5hr" ~ "timepointpoint: 5hr",
+  colname == "Targeting18hr" ~ "timepointpoint: 18hr"
 ))
 
 

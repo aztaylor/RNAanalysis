@@ -21,8 +21,11 @@ library("glmpca")
 library("ggbeeswarm")
 library("apeglm")
 library("genefilter")
-if (!require("AnnotationHub")) BiocManager::install("AnnotationHub")
-library(AnnotationHub)
+library("AnnotationHub")
+library("tm") # Text mining
+library("tidytext")
+library(httr)
+library(jsonlite)
 ```
 
 ```{R}
@@ -664,7 +667,125 @@ trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) +
 print(trt_comp)  
 ggsave("../Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
 ```
+# Pull the gene functions from Uniprot.
+```{r}
+genes <- heatmap_data_sorted$Gene
+
+# Fetch UniProt data for all genes
+results <- lapply(genes, function(gene) {
+  url <- paste0("https://www.ebi.ac.uk/proteins/api/proteins?gene=", gene)
+  response <- GET(url, accept("application/json"))
+  fromJSON(rawToChar(response$content))
+})
+
+# Extract functions
+sapply(results, function(x) x$protein$recommendedName$fullName$value)
+```
 
 ```{r}
+functions <- sapply(results, function(x) x$protein$recommendedName$fullName$value)
+
+# Function to safely extract GO terms
+get_go_terms <- function(entry) {
+  if (!is.null(entry$dbReferences) && 
+      "type" %in% names(entry$dbReferences)) {
+    go_terms <- entry$dbReferences[entry$dbReferences$type == "GO", ]
+    if (nrow(go_terms) > 0) {
+      return(go_terms[, c("id", "properties.term")])
+    }
+  }
+  return(data.frame(id=character(), term=character())) # Empty df if no GO terms
+}
+
+library(UniProt.ws)
+up <- UniProt.ws(taxId = 83333)  # Automatically loads latest UniProt data
+
+# Fetch GO terms for TP53, BRCA1, EGFR
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+library(org.EcK12.eg.db)
+
+# 1. Get ALL UniProt IDs for your genes (including Trembl)
+genes <- as.character(heatmap_data_sorted$Gene)
+all_genes <- mapIds(
+  org.EcK12.eg.db,
+  keys = genes,
+  keytype = "SYMBOL",
+  column = "ENTREZID",
+  multiVals = "first"  # Returns all matches 
+) %>% unique()
+
+print(all_genes)
+
+go_results <- lapply(all_genes, function(gene) {
+  res <- select(up, keys = gene, columns = c("cc_function"), keytype = "GeneID")
+  if (length(rownames(res)) > 0) {
+    func <- grepl(res$Function..CC., pattern = "FUNCTION: (.*?) \\{", ignore.case = TRUE)
+    sources <- grepl(res$Function..CC., pattern = "(.\\{*?\\})", ignore.case = TRUE)
+    data.frame(Gene = gene, Function = func, Sources = sources)#, Description = terms[2])
+  } else {
+    data.frame(Gene = gene, Function = "No function description.", Sources = NA)
+  }
+})
+
+# Combine results
+go_df <- do.call(rbind, go_results)
+print(go_df)
+```
+```{r}
+genes <- as.character(heatmap_data_sorted$Gene)
+all_genes <- mapIds(
+  org.EcK12.eg.db,
+  keys = genes,
+  keytype = "SYMBOL",
+  column = "ENTREZID",
+  multiVals = "first"
+)
+
+# Create a mapping between symbols and ENTREZ IDs
+gene_mapping <- data.frame(
+  SYMBOL = genes,
+  ENTREZID = all_genes,
+  stringsAsFactors = FALSE
+) %>% unique
+
+function_results <- lapply(1:nrow(gene_mapping), function(i) {
+  gene_symbol <- gene_mapping$SYMBOL[i]
+  gene_entrez <- gene_mapping$ENTREZID[i]
+  
+  res <- select(up, keys = gene_entrez, columns = c("cc_function"), keytype = "GeneID")
+  
+  if (length(rownames(res)) > 0) {
+    # Extract function and sources
+    func_match <- str_match(res$Function..CC., "FUNCTION: (.*?) \\{")
+    sources_match <- str_match(res$Function..CC., "\\{(.*?)\\}")
+    
+    data.frame(
+      Gene_Symbol = gene_symbol,  # Original symbol
+      Gene_ENTREZ = gene_entrez,  # ENTREZ ID
+      Function = ifelse(!is.na(func_match[,2]), func_match[,2], NA),
+      Sources = ifelse(!is.na(sources_match[,2]), sources_match[,2], NA),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      Gene_Symbol = gene_symbol,
+      Gene_ENTREZ = gene_entrez,
+      Function = "No function description",
+      Sources = NA,
+      stringsAsFactors = FALSE
+    )
+  }
+})
+
+# Combine results
+function_df <- do.call(rbind, function_results)
+print(function_df)
+```
+# Now let's analyze the functions and cluster using natural language process approaches.
+```{r}
+# Check the exact gene name in UniProt first
+l
+
 
 ```

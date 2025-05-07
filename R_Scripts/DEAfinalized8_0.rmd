@@ -390,8 +390,8 @@ divergence_data <- heatmap_data %>%
   ) %>%
   # Calculate divergence metrics
   mutate(
-    s4_vs_WT = abs(`s4` - `WT`),  # Absolute difference from WT baseline
-    s4_vs_NC = abs(`NC` - `WT`),  # Absolute difference from NC control
+    s4_vs_WT = `s4` - `WT`,  # Absolute difference from WT baseline
+    s4_vs_NC = `NC` - `WT`,  # Absolute difference from NC control
     combined_divergence = abs(s4_vs_WT - s4_vs_NC)  # Total divergence score
   ) %>%
   arrange(desc(combined_divergence)) # Sort by highest divergence
@@ -460,7 +460,7 @@ ggplot(heatmap_data_sorted, aes(
   labs(
     x = "Strain + IPTG",
     y = "Gene",
-    fill = "log2FC\n(vs WT -IPTG T1)"
+    fill = expression(atop(log[2],"Fold Change")) 
   )
 ```
 # Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
@@ -473,7 +473,7 @@ ggplot(heatmap_relative, aes(
   geom_tile(aes(fill = log2FoldChange)) +
   #facet_grid(~ timepoint, scales = "free_x") +
   scale_fill_gradient2(
-    low = "blue", mid = "white", high = "red",
+    low = "darkblue",  high = "darkred"
     #limits = c(-20, 20)  # Adjust based on your data
   ) +
   theme(
@@ -483,48 +483,11 @@ ggplot(heatmap_relative, aes(
   labs(
     x = "Strain + IPTG",
     y = "Gene",
-    fill = expression(paste(log[2], "FC (vs WT -IPTG T1)"))
+    fill = expression(atop(log[2],"Fold Change")) 
+                            
   )
-
-heatmap_data_sorted %>%
-  filter(genotype %in% c("NC", "s4")) %>%
-  anti_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
-  count(Gene)  # Genes missing WT baselines
-
-wt_baseline %>% 
-  count(Gene, treatment, timepoint) %>% 
-  filter(n > 1)  # Check for duplicates
 ```
 
-```{r}
-# 1. Check intermediate results BEFORE binding
-nc_results <- results(dds, list(c("genotype_NC_vs_WT", "treatment_ind_vs_Nind",
-    "genotypeNC.treatmentind", "timepoint_18_vs_5",
-    "genotypeNC.timepoint18", "treatmentind.timepoint18",
-    "genotypeNC.treatmentind.timepoint18"))) %>% 
-  as.data.frame() %>% 
-  rownames_to_column("Gene") %>%
-  mutate(genotype = "NC", treatment = "ind", timepoint = "18")
-
-s4_results <- results(dds, contrast = list(c("genotype_s4_vs_WT", "treatment_ind_vs_Nind", "genotypes4.treatmentind", "timepoint_18_vs_5",
-      "genotypes4.timepoint18", "treatmentind.timepoint18",
-      "genotypes4.treatmentind.timepoint18"
-      ))) %>% 
-  as.data.frame() %>% 
-  rownames_to_column("Gene") %>%
-  mutate(genotype = "s4", treatment = "ind", timepoint = "18")
-
-# Verify each component
-table(nc_results$treatment)  # Should show all "ind"
-table(s4_results$treatment)  # Should show all "ind"
-
-# 2. Check AFTER binding but BEFORE any other operations
-temp_combined <- bind_rows(nc_results, s4_results)
-table(temp_combined$genotype, temp_combined$treatment)
-
-# 3. Check FINAL output
-table(heatmap_data$genotype, heatmap_data$treatment)
-```
 
 ```{r}
 genes <- c(
@@ -594,26 +557,17 @@ nor_df <- log(nor_df[,-1], 2)
 ```
 
 ```{r}
-#l2f_5_s4 <- na.omit(l2f_5_s4)
-#l2f_5_s4$rownames <- rownames(l2f_5_s4)
-#l2f_5_NC <- na.omit(l2f_5_NC)
-#l2f_5_NC$rownames <- rownames(l2f_5_NC)
-#l2f_18_s4 <- na.omit(l2f_18_s4)
-#l2f_18_s4$rownames <- rownames(l2f_18_s4)
-#l2f_18_NC <- na.omit(l2f_18_NC)
-#l2f_18_NC$rownames <- rownames(l2f_18_NC)
-#l <- list(l2f_5_NC, l2f_5_s4, l2f_18_NC, l2f_18_s4)
-#l2f_df <- Reduce(function(x, y) merge(x, y, by="rownames", all=T), l)
+heatmap_data_comp <- heatmap_data %>%
+  filter(genotype == "s4", treatment == "ind", timepoint == timep) %>%
+  select(Gene, log2FoldChange) %>%
+  remove_rownames() %>%
+  column_to_rownames(var="Gene")
 
-#rownames(l2f_df) <- l2f_df$rownames
-#l2f_df <- l2f_df[,-1]
-#colnames(l2f_df) <- c("CasRx-gRNA-NT 5hr.", "CasRx-gRNA-s4 5hr.", "CasRx-gRNA-NT 18hr.", "CasRx-gRNA-s4 18hr.")
+gene_overlap <- rownames(nor_df) %in% rownames(heatmap_data_comp)
+subset_heatmap <- heatmap_data_comp[rownames(heatmap_data_comp) %in% rownames(nor_df), , drop=FALSE]
+subset_nor_df <- nor_df[rownames(nor_df) %in% rownames(heatmap_data_comp), , drop=FALSE]
 
-gene_overlap <- rownames(nor_df) %in% rownames(l2f_raw_df)
-subset_l2f_df <- l2f_raw_df[rownames(l2f_raw_df) %in% rownames(nor_df), , drop=FALSE]
-subset_nor_df <- nor_df[rownames(subset_l2f_df), , drop=FALSE]
-
-subset_df <- Reduce(function(x,y) merge(x,y, by='row.names', all=T), list(subset_l2f_df, subset_nor_df))
+subset_df <- Reduce(function(x,y) merge(x,y, by='row.names', all=T), list(subset_heatmap, subset_nor_df))
 rownames(subset_df)<-subset_df$Row.names
 subset_df <- subset_df[, -1]
 ```
@@ -628,18 +582,16 @@ varNor_l2f_df
 
 varNor_l2f_df <- varNor_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
 
-varNor_l2f_df <- varNor_l2f_df %>% mutate(timepoint = case_when(
-  colname == "Nor_0.5_MIC" ~ "Norfloxacin 0.5MIC",
-  colname == "Nor_1_MIC" ~ "Norfloxacin 1MIC",
-  colname == "Nor_2_MIC" ~ "Norfloxacin 2MIC",
-  colname == "Nor_33_MIC" ~ "Norfloxacin 33MIC",
-  colname == "Nor_133_MIC" ~ "Norfloxacin 133MIC"
+varNor_l2f_df <- varNor_l2f_df %>% mutate(colname = case_when(
+  colname == "Nor_0.5_MIC" ~ "0.5\nMIC",
+  colname == "Nor_1_MIC" ~ "1\nMIC",
+  colname == "Nor_2_MIC" ~ "2\nMIC",
+  colname == "Nor_33_MIC" ~ "33\nMIC",
+  colname == "Nor_133_MIC" ~ "133\nMIC"
 ))
 
 columns <- c("Norfloxacin\n0.5MIC", "Norfloxacin\n1MIC", "Norfloxacin\n2MIC", "Norfloxacin\n33MIC", "Norfloxacin\n133MIC")
-
-varNor_l2f_df$colname  <- factor(varNor_l2f_df$colname, levels=c("Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
-varNor_l2f_df$timepoint <- factor(varNor_l2f_df$timepoint, levels=unique(varNor_l2f_df$timepoint))
+varNor_l2f_df$colname <- factor(varNor_l2f_df$colname, levels=unique(varNor_l2f_df$colname))
 varNor_l2f_df
 varNor_l2f_df$rowname<-factor(varNor_l2f_df$rowname, levels=unique(varNor_l2f_df$rowname))
 
@@ -647,14 +599,18 @@ fsize = 7
 
 nor_top_hits <- ggplot(varNor_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
   geom_tile() +
-  scale_fill_distiller(palette="RdGy") +
-  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  #scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(angle=45, family=font, size=fsize)) +
   theme(axis.text.y = element_text(family=font, size=fsize)) +
-  coord_cartesian(clip = "off") +
-  scale_x_discrete(labels = columns) +
+  coord_cartesian(clip = "off") +  
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  #scale_x_discrete(labels = columns) +
   xlab("Treatment") +
   ylab("Gene")+
-  labs(fill="Log2fold\nChange")
+  labs(fill=expression(atop(log[2],"Fold Change")) )
 print(nor_top_hits)
 ggsave("../Figures/NorTopHits.png", nor_top_hits, dpi=600)
 ```
@@ -669,12 +625,11 @@ subset_df <- subset_df[rownames(subset_sum_df),]
 subset_df2 <- subset_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
 
 subset_df2 <- subset_df2 %>% mutate(group = case_when(
-  grepl("Targeting", colname)~"dCasRx",
+  grepl("log2FoldChange", colname)~"dCasRx",
   grepl("Nor", colname)~"Norfloxacin"
 ))
 subset_df2 <- subset_df2 %>% mutate(label = case_when(
-  colname == "Targeting5hr" ~ "Targeting\ngRNA 5hr",
-  colname == "Targeting18hr" ~ "Targeting\ngRNA 18hr",
+  colname == "log2FoldChange" ~ "dCasRx\n5hr",
   colname == "Nor_0.5_MIC" ~ "Nofloxacin\n0.5MIC",
   colname == "Nor_1_MIC" ~ "Nofloxacin\n1MIC",
   colname == "Nor_2_MIC" ~ "Nofloxacin\n2MIC",
@@ -682,8 +637,8 @@ subset_df2 <- subset_df2 %>% mutate(label = case_when(
   colname == "Nor_133_MIC" ~ "Nofloxacin\n133MIC"
 ))
 
-subset_df2$label <- factor(subset_df2$label, levels=c("Targeting\ngRNA 5hr", "Targeting\ngRNA 18hr", "Nofloxacin\n0.5MIC", "Nofloxacin\n1MIC", "Nofloxacin\n2MIC", "Nofloxacin\n33MIC", "Nofloxacin\n133MIC"))
-subset_df2$colname  <- factor(subset_df2$colname, levels=c("Targeting5hr", "Targeting18hr", "Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
+subset_df2$label <- factor(subset_df2$label, levels=c("dCasRx\n5hr", "Nofloxacin\n0.5MIC", "Nofloxacin\n1MIC", "Nofloxacin\n2MIC", "Nofloxacin\n33MIC", "Nofloxacin\n133MIC"))
+subset_df2$colname  <- factor(subset_df2$colname, levels=c("Targeting5hr", "Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
 subset_df2$rowname <- factor(subset_df2$rowname, levels=unique(subset_df2$rowname))
 
 CasRx_df <- subset_df2 %>% filter(group=="CasRx")
@@ -691,105 +646,25 @@ Nor_df <- subset_df2 %>% filter(group=="Norfloxacin")
 
 trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) + 
   geom_tile() +
-  scale_fill_distiller(palette="RdGy", limits=c(-5,5)) +
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
   theme(axis.text.x = element_text(angle=45, hjust = 1, family=font)) +
   #theme( plot.margin=unit(c(2,2,2,2), "lines")) +
   #annotation_custom(x_ann1, xmin=1.5, xmax=1, ymin=6, ymax=6) +
   #annotation_custom(x_ann2, xmin= 3.5, xmax=3.5, ymin=6, ymax=6)+
-  facet_wrap( ~group, scales="free_x" ) +
+  #facet_wrap( ~group, scales="free_x" ) +
   #scale_x_discrete(labels = c("Non-Targeting gRNA", "Non-Targeting gRNA", "Targeing gRNA", "Targeting gRNA", "Norfloxacin 0.5MIC", "Norfloxacin 1MIC", "Norfloxacin 2MIC", "Norfloxacin 33MIC", "Norfloxacin 133MIC")) +
   coord_cartesian(clip = "off") +
   xlab("Treatment") +
   ylab("Gene")+
-  labs(fill="Log2fold\nChange")
-
+  labs(fill=expression(atop(log[2],"Fold Change"))
+)
 print(trt_comp)  
 ggsave("../Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
 ```
 
 ```{r}
-n_topgenes <- 50
-abs_sum_df <- data.frame(sort(rowSums(abs(l2f_df[1:n_topgenes, ])), decreasing=FALSE))
-abs_sum_ind <- rownames(abs_sum_df)
-for (i in 1:length(abs_sum_ind)){
-  print(abs_sum_ind[length(abs_sum_ind)+1-i])  
-}
 
 ```
-
-```{r, fig.height=8, fig.width=6}
-as_l2f_df <- l2f_df[rownames(abs_sum_df),]
-
-as_l2f_df <- as_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
-
-as_l2f_df <- as_l2f_df %>% mutate(timepoint = case_when(
-  colname == "Targeting5hr" ~ "timepointpoint: 5hr",
-  colname == "Targeting18hr" ~ "timepointpoint: 18hr"
-))
-
-as_l2f_df$colname  <- factor(as_l2f_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
-as_l2f_df$timepoint <- factor(as_l2f_df$timepoint, levels=unique(as_l2f_df$timepoint))
-as_l2f_df
-as_l2f_df$rowname<-factor(as_l2f_df$rowname, levels=unique(as_l2f_df$rowname))
-
-asTop_hits <- ggplot(as_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
-  geom_tile() +
-  scale_fill_distiller(palette="RdGy") +
-  theme(axis.text.x = element_text(family=font, size=fsize)) +
-  theme(axis.text.y = element_text(family=font, size=fsize)) +
-  coord_cartesian(clip = "off") +
-  facet_wrap( ~timepoint, scales="free_x" ) +
-  scale_x_discrete(labels = columns) +
-  xlab("Treatment") +
-  ylab("Gene")+
-  labs(fill="Log2fold\nChange")
-
-print(asTop_hits)
-ggsave("../Figures/asTophitsNC_vs_s4.png", asTop_hits, dpi=600)
-```
-
-```{r, fig.height=12, fig.width=6}
-scale = 0.7
-var <- apply(l2f_df, MARGIN=1, FUN= var)
-var_df = data.frame(Var=var)
-rownames(var_df) <- rownames(l2f_df)
-
-var_l2f_df <- l2f_df[order(var_df$Var, decreasing=FALSE), , drop=FALSE]
-var_l2f_df <- var_l2f_df[var_df<scale*median(var_df$Var),]
-var_l2f_df
-
-
-var_l2f_df <- var_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
-
-var_l2f_df <- var_l2f_df %>% mutate(timepoint = case_when(
-  colname == "Targeting5hr" ~ "timepointpoint: 5hr",
-  colname == "Targeting18hr" ~ "timepointpoint: 18hr"
-))
-
-
-var_l2f_df$colname  <- factor(var_l2f_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
-var_l2f_df$timepoint <- factor(var_l2f_df$timepoint, levels=unique(var_l2f_df$timepoint))
-var_l2f_df
-var_l2f_df$rowname<-factor(var_l2f_df$rowname, levels=unique(var_l2f_df$rowname))
-
-columns <- c("NT vs. T\n5hr.", "NT vs. T\n18hr")
-
-fsize = 10
-
-top_hits <- ggplot(var_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
-  geom_tile() +
-  scale_fill_distiller(palette="RdGy") +
-  theme(axis.text.x = element_text(family=font, size=fsize)) +
-  theme(axis.text.y = element_text(family=font, size=fsize)) +
-  coord_cartesian(clip = "off") +
-  facet_wrap( ~timepoint, scales="free_x" ) +
-  scale_x_discrete(labels = columns) +
-  xlab("Treatment") +
-  ylab("Gene")+
-  labs(fill="Log2fold\nChange")
-print(top_hits)
-ggsave("../Figures/varTophitsNC_vs_s4.png", top_hits, dpi=600)
-```
-
-```
-

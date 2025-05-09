@@ -704,8 +704,7 @@ all_genes <- data.frame(Gene = heatmap_data_sorted$Gene) %>%
     keytype = "SYMBOL",
     column = "ENTREZID",
     multiVals = "first"
-  )) %>%
-  unique()
+  ))
 
 go_df <-  AnnotationDbi::select(up, 
                           keys = all_genes$ENTREZID, 
@@ -728,7 +727,10 @@ function_df <- all_genes %>%
   # Remove unwanted IDs
   filter(!str_detect(function_term, "^[A-Z0-9]{6,}$")) %>%
   # Remove duplicates (same gene + same term pair)
-  distinct(Gene, function_term, go_term, .keep_all = TRUE)
+  distinct(Gene, .keep_all = TRUE)  %>%
+  subset(select=-c(Functions, pairs)) %>%
+  rename(Functions = function_term, GO = go_term)
+
 
 write.csv(function_df, file = "../Data/Function_Descriptions.csv", row.names = TRUE)
 ```
@@ -742,8 +744,8 @@ corpus <- Corpus(VectorSource(function_descriptions)) %>%
   tm_map(content_transformer(tolower)) %>%
   tm_map(removePunctuation) %>%
   tm_map(removeNumbers) %>%
-  tm_map(removeWords, paste0("\\b", stopwords("en"), "\\b")) #%>%
-  #tm_map(stemDocument)
+  tm_map(removeWords, paste0("\\b", stopwords("en"), "\\b")) %>%
+  tm_map(stemDocument)
 
 function_df$function_term <- sapply(corpus, as.character)
 function_df <- na.omit(function_df)
@@ -754,7 +756,7 @@ function_df <- na.omit(function_df)
 k<-5
 
 BoW_dtm <- function_df %>%
-  unnest_tokens(word, function_term) %>%
+  unnest_tokens(word, Functions) %>%
   count(Gene, word) %>%
   cast_dtm(Gene, word, n) 
 
@@ -766,7 +768,7 @@ library(topicmodels)
 stopifnot(inherits(BoW_dtm, "DocumentTermMatrix"))
 
 # 2. Remove sparse terms FIRST (less aggressive threshold)
-BoW_lda_dtm <- removeSparseTerms(BoW_dtm, sparse = 0.95)  # Start with 0.95, adjust as needed
+BoW_lda_dtm <- removeSparseTerms(BoW_dtm, sparse = 0.999)  # Start with 0.95, adjust as needed
 cat("After term removal:", dim(BoW_lda_dtm), "\n")  # Should show [57 x reduced_terms]
 
 # 3. Then remove empty documents
@@ -830,10 +832,10 @@ function_df[empty_rows, c("Gene", "ENTREZID")]
 # Try different clustering methods.
 ```{r}
 # k-means clustering
-k <- 10
+k <- 5
 BoW_kmeans_res <- kmeans(as.matrix(BoW_dtm), centers = k)
-t2v_kmeans_res <- kmeans(as.matrix(t2v_dtm), centers = k)
-#function_df$BoW_k_means_cluster <- as.factor(BoW_kmeans_res$cluster)
+#t2v_kmeans_res <- kmeans(as.matrix(t2v_dtm), centers = k)
+function_df$BoW_k_means_cluster <- as.factor(BoW_kmeans_res$cluster)
 #function_df$t2v_k_means_cluster <- as.factor(t2v_kmeans_res$cluster)
 
 # Hierarchical clustering
@@ -925,13 +927,13 @@ if(nrow(t2v_dtm) > 0) {
 doc_index <- which(rowSums(t2v_dtm) > 0)[1]
 
 # Proper sparse matrix access
-term_indices <- t2v_dtm[doc_index, , drop = FALSE]@i + 1  # Note drop=FALSE
-term_counts <- t2v_dtm[doc_index, , drop = FALSE]@x
+#term_indices <- t2v_dtm[doc_index, , drop = FALSE]@i + 1  # Note drop=FALSE
+#term_counts <- t2v_dtm[doc_index, , drop = FALSE]@x
 
-data.frame(
-  term = colnames(t2v_dtm)[term_indices],
-  count = term_counts
-)
+#data.frame(
+ # term = colnames(t2v_dtm)[term_indices],
+  #count = term_counts
+#)
 
 #function_df$BoW_topic_model <- topics(BoW_lda_model)
 ```

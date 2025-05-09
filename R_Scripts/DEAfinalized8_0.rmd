@@ -24,6 +24,10 @@ library("genefilter")
 library("AnnotationHub")
 library("tm") # Text mining
 library("tidytext")
+library("text2vec")
+library("lsa")
+library("topicmodels")
+library("AnnotationDbi")
 library(httr)
 library(jsonlite)
 ```
@@ -669,20 +673,6 @@ ggsave("../Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
 ```
 # Pull the gene functions from Uniprot.
 ```{r}
-genes <- heatmap_data_sorted$Gene
-
-# Fetch UniProt data for all genes
-results <- lapply(genes, function(gene) {
-  url <- paste0("https://www.ebi.ac.uk/proteins/api/proteins?gene=", gene)
-  response <- GET(url, accept("application/json"))
-  fromJSON(rawToChar(response$content))
-})
-
-# Extract functions
-sapply(results, function(x) x$protein$recommendedName$fullName$value)
-```
-
-```{r}
 functions <- sapply(results, function(x) x$protein$recommendedName$fullName$value)
 
 # Function to safely extract GO terms
@@ -707,85 +697,296 @@ library(org.EcK12.eg.db)
 
 # 1. Get ALL UniProt IDs for your genes (including Trembl)
 genes <- as.character(heatmap_data_sorted$Gene)
-all_genes <- mapIds(
-  org.EcK12.eg.db,
-  keys = genes,
-  keytype = "SYMBOL",
-  column = "ENTREZID",
-  multiVals = "first"  # Returns all matches 
-) %>% unique()
+all_genes <- data.frame(Gene = heatmap_data_sorted$Gene) %>%
+  mutate(ENTREZID = mapIds(
+    org.EcK12.eg.db,
+    keys = genes,
+    keytype = "SYMBOL",
+    column = "ENTREZID",
+    multiVals = "first"
+  )) %>%
+  unique()
 
-print(all_genes)
+go_df <-  AnnotationDbi::select(up, 
+                          keys = all_genes$ENTREZID, 
+                          columns = c("go_p"), 
+                          keytype = "GeneID"
+                          )
 
-go_results <- lapply(all_genes, function(gene) {
-  res <- select(up, keys = gene, columns = c("cc_function"), keytype = "GeneID")
-  if (length(rownames(res)) > 0) {
-    func <- grepl(res$Function..CC., pattern = "FUNCTION: (.*?) \\{", ignore.case = TRUE)
-    sources <- grepl(res$Function..CC., pattern = "(.\\{*?\\})", ignore.case = TRUE)
-    data.frame(Gene = gene, Function = func, Sources = sources)#, Description = terms[2])
-  } else {
-    data.frame(Gene = gene, Function = "No function description.", Sources = NA)
-  }
-})
+function_df <- all_genes %>%
+  inner_join(go_df, by = c("ENTREZID" = "From")) %>%
+  rename(UniProtID = Entry, Functions = colnames(.)[[4]]) %>%
+  # Split into individual term-GO pairs
+  mutate(pairs = str_split(Functions, ";\\s*")) %>%
+  unnest(pairs) %>%
+  filter(pairs != "") %>%
+  # Extract clean components
+  mutate(
+    function_term = str_remove(pairs, "\\s*\\[[^]]+\\]\\s*") %>% str_trim(),
+    go_term = str_extract(pairs, "\\[[^]]+\\]")
+  ) %>%
+  # Remove unwanted IDs
+  filter(!str_detect(function_term, "^[A-Z0-9]{6,}$")) %>%
+  # Remove duplicates (same gene + same term pair)
+  distinct(Gene, function_term, go_term, .keep_all = TRUE)
 
-# Combine results
-go_df <- do.call(rbind, go_results)
-print(go_df)
-```
-```{r}
-genes <- as.character(heatmap_data_sorted$Gene)
-all_genes <- mapIds(
-  org.EcK12.eg.db,
-  keys = genes,
-  keytype = "SYMBOL",
-  column = "ENTREZID",
-  multiVals = "first"
-)
-
-# Create a mapping between symbols and ENTREZ IDs
-gene_mapping <- data.frame(
-  SYMBOL = genes,
-  ENTREZID = all_genes,
-  stringsAsFactors = FALSE
-) %>% unique
-
-function_results <- lapply(1:nrow(gene_mapping), function(i) {
-  gene_symbol <- gene_mapping$SYMBOL[i]
-  gene_entrez <- gene_mapping$ENTREZID[i]
-  
-  res <- select(up, keys = gene_entrez, columns = c("cc_function"), keytype = "GeneID")
-  
-  if (length(rownames(res)) > 0) {
-    # Extract function and sources
-    func_match <- str_match(res$Function..CC., "FUNCTION: (.*?) \\{")
-    sources_match <- str_match(res$Function..CC., "\\{(.*?)\\}")
-    
-    data.frame(
-      Gene_Symbol = gene_symbol,  # Original symbol
-      Gene_ENTREZ = gene_entrez,  # ENTREZ ID
-      Function = ifelse(!is.na(func_match[,2]), func_match[,2], NA),
-      Sources = ifelse(!is.na(sources_match[,2]), sources_match[,2], NA),
-      stringsAsFactors = FALSE
-    )
-  } else {
-    data.frame(
-      Gene_Symbol = gene_symbol,
-      Gene_ENTREZ = gene_entrez,
-      Function = "No function description",
-      Sources = NA,
-      stringsAsFactors = FALSE
-    )
-  }
-})
-
-# Combine results
-function_df <- do.call(rbind, function_results)
-print(function_df)
+write.csv(function_df, file = "../Data/Function_Descriptions.csv", row.names = TRUE)
 ```
 # Now let's analyze the functions and cluster using natural language process approaches.
 ```{r}
+function_df <- read.csv("../Data/Function_Descriptions.csv", row.names = 1)
 # Check the exact gene name in UniProt first
-l
+function_descriptions <- function_df$function_term
+
+corpus <- Corpus(VectorSource(function_descriptions)) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, paste0("\\b", stopwords("en"), "\\b")) #%>%
+  #tm_map(stemDocument)
+
+function_df$function_term <- sapply(corpus, as.character)
+function_df <- na.omit(function_df)
+```
+# Vectorize the corpus using A Bag-of-Words with TF-IDF weighting and Word Embeddings via Glove or Word2Vec.
+```{r}
+# A Bag-of-Words with TF-IDF weighting.
+k<-5
+
+BoW_dtm <- function_df %>%
+  unnest_tokens(word, function_term) %>%
+  count(Gene, word) %>%
+  cast_dtm(Gene, word, n) 
+
+library(tm)
+library(topicmodels)
+
+# 1. Start with your original BoW_dtm (57x794)
+#    Ensure it's a valid DocumentTermMatrix
+stopifnot(inherits(BoW_dtm, "DocumentTermMatrix"))
+
+# 2. Remove sparse terms FIRST (less aggressive threshold)
+BoW_lda_dtm <- removeSparseTerms(BoW_dtm, sparse = 0.95)  # Start with 0.95, adjust as needed
+cat("After term removal:", dim(BoW_lda_dtm), "\n")  # Should show [57 x reduced_terms]
+
+# 3. Then remove empty documents
+BoW_rowTotals <- rowSums(as.matrix(BoW_lda_dtm))
+BoW_lda_dtm <- BoW_lda_dtm[BoW_rowTotals > 0, ]
+cat("After doc removal:", dim(BoW_lda_dtm), "\n")  # e.g., [55 x 120]
+
+# 4. Run LDA only if documents remain
+if(nrow(BoW_lda_dtm) > 0) {
+  BoW_lda_model <- LDA(BoW_lda_dtm, k = k, control = list(seed = 123))
+} else {
+  stop("All documents were filtered out! Adjust sparse term threshold.")
+}
+
+it <- itoken(function_df$function_term, 
+             ids = function_df$Gene,
+             tokenizer = word_tokenizer,
+             progressbar = TRUE)
+vocab <- create_vocabulary(it)
+vectorizer <- vocab_vectorizer(vocab)
+t2v_dtm <- create_dtm(it, vectorizer)
+
+rownames(BoW_dtm) <- function_df$Gene[1:nrow(BoW_dtm)]
+
+# 4. Verify
+print(class(t2v_dtm))  # Should show "dgCMatrix" "dsparseMatrix" "generalMatrix"
+print(dim(t2v_dtm))    # Should show [documents x terms]
+
+rownames(t2v_dtm) <- function_df$Gene[1:nrow(t2v_dtm)]
+colnames(t2v_dtm) <- vocab$term
+
+# 1. Verify input data
+cat("\n=== Input Data ===\n")
+print(head(function_df$function_term))
+print(length(function_df$function_term))
+
+# 2. Check iterator
+it <- itoken(function_df$function_term)
+cat("\n=== Iterator ===\n")
+print(class(it))
+
+# 3. Check vocabulary
+vocab <- create_vocabulary(it)
+cat("\n=== Vocabulary ===\n")
+print(dim(vocab))
+
+# 4. Create and inspect DTM
+t2v_dtm <- create_dtm(it, vocab_vectorizer(vocab))
+cat("\n=== Final DTM ===\n")
+print(class(t2v_dtm))
+print(dim(t2v_dtm))
+print(object.size(t2v_dtm))
+
+t2v_dtm <- t2v_dtm[rowSums(t2v_dtm) > 0, ] # Remove empty rows
+```
+```{r}
+empty_rows <- which(rowSums(as.matrix(BoW_dtm)) == 0)
+function_df[empty_rows, c("Gene", "ENTREZID")]
+```
+
+# Try different clustering methods.
+```{r}
+# k-means clustering
+k <- 10
+BoW_kmeans_res <- kmeans(as.matrix(BoW_dtm), centers = k)
+t2v_kmeans_res <- kmeans(as.matrix(t2v_dtm), centers = k)
+#function_df$BoW_k_means_cluster <- as.factor(BoW_kmeans_res$cluster)
+#function_df$t2v_k_means_cluster <- as.factor(t2v_kmeans_res$cluster)
+
+# Hierarchical clustering
+# Use the cosine similarity which is ideal for text data.
+BoW_cosine_matrix <- as.matrix(BoW_dtm)
+
+BoW_cosine_sim <- lsa::cosine(t(BoW_cosine_matrix))
+
+BoW_cosine_dist <- as.dist(1 - BoW_cosine_sim)
+
+BoW_hclust <- hclust(BoW_cosine_dist, method = "ward.D2")
 
 
+# function_df <- function_df %>%
+#   mutate(BoW_hclust_cluster = as.factor(cutree(BoW_hclust, k = k)),
+#          t2v_hclust_cluster = as.factor(cutree(t2v_hclust, k = k)),
+#          BoW_Dendro_Order = order.dendrogram(as.dendrogram(BoW_hclust)),
+#          t2v_Dendro_Order = order.dendrogram(as.dendrogram(t2v_hclust)))
+
+t2v_lda_dtm <- DocumentTermMatrix(t2v_dtm, control = list(weighting = weightTf))
+t2v_lda_dtm <- removeSparseTerms(t2v_lda_dtm, 0.9999)
+t2v_rowTotals <- apply(t2v_lda_dtm, 1, sum)
+t2v_lda_dtm <- t2v_lda_dtm[t2v_rowTotals > 0, ]
+t2v_lda_model <- LDA(t2v_lda_dtm, k = k, control = list(seed = 123))
+
+# Note that the above commented out code does not work because of the way text2vec stores it's dtm. 
+# compared to the tm library, t2v creates a raw term-count matrix, lacking explicit storage of wieghting attributes,
+# using simple counts that are equivelent to tm:weightTf, and using a more memory efficient sparse matrix format.
+# To fix this we could either covert to a tm DTM or use text2vec directly. Additionally we could add a weigting attribute 
+# to the t2v dtm using 
+#    attr(t2v_dtm, "weighting") <- c("term frequency", "tf")
+#    class(t2v_dtm) <- c("DocumentTermMatrix", "simple_triplet_matrix")
+# We'll use t2v directly for now.
+cat("LDA documents:", nrow(BoW_lda_model@gamma), "\n")  # Should match:
+cat("DTM documents:", nrow(BoW_lda_dtm), "\n")          # Should match:
+cat("Dataframe rows:", nrow(function_df), "\n")          # The mismatch
+
+
+
+# Now the assignment should work
+#function_df$BoW_topic_model <- topics(BoW_lda_model)
+
+t2v_lda_model <- LDA(
+  t2v_dtm,
+  k = 5,
+  method = "VEM",
+  control = list(seed = 123)
+)
+
+# Now do verification
+Matrix::nnzero(t2v_lda_dtm)
+
+# Inspect first document
+
+# 1. Check matrix type
+print(class(t2v_dtm))  # Should show "dgCMatrix"
+
+# 2. Inspect first non-empty document
+# 1. Find first non-empty document
+nonzero_docs <- which(rowSums(t2v_dtm) > 0)[1]
+print(paste("First non-empty gene at position:", nonzero_docs))
+
+# Complete diagnostics.
+# 1. Check current object
+cat("Object type:", class(t2v_dtm), "\n")
+cat("Dimensions:", if(is.null(dim(t2v_dtm))) "vector" else dim(t2v_dtm), "\n")
+
+# 2. If corrupted, recreate
+if(!inherits(t2v_dtm, "dgCMatrix")) {
+  warning("Recreating DTM...")
+  t2v_dtm <- create_dtm(itoken(your_text_data), 
+                     vocab_vectorizer(create_vocabulary(itoken(your_text_data))))
+}
+
+# 3. Safe inspection
+if(nrow(t2v_dtm) > 0) {
+  doc_index <- which(rowSums(t2v_dtm) > 0)[1]
+  sparse_slice <- t2v_dtm[doc_index, , drop = FALSE]
+  
+  cat("\nFirst non-empty doc:", rownames(t2v_dtm)[doc_index], "\n")
+  print(data.frame(
+    term = colnames(t2v_dtm)[sparse_slice@i + 1],
+    count = sparse_slice@x
+  ))
+} else {
+  warning("No documents with terms found!")
+}
+
+doc_index <- which(rowSums(t2v_dtm) > 0)[1]
+
+# Proper sparse matrix access
+term_indices <- t2v_dtm[doc_index, , drop = FALSE]@i + 1  # Note drop=FALSE
+term_counts <- t2v_dtm[doc_index, , drop = FALSE]@x
+
+data.frame(
+  term = colnames(t2v_dtm)[term_indices],
+  count = term_counts
+)
+
+#function_df$BoW_topic_model <- topics(BoW_lda_model)
+```
+# Now visualize
+```{r}
+library("ggpubr")
+library("factoextra")
+kmeans = function_df$BoW_k_means_cluster
+fviz_cluster(t2v_kmeans_res, 
+             data = BoW_dtm)
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Dertermine the top contributing tokens for each cluster.
+```{r, fig.align="center, echo= FALSE, fig.width=5, fig.height=20}}
+# Assuming:
+# - `clusters` is a vector of cluster assignments (e.g., from kmeans$cluster)
+# - `dtm` is your Document-Term Matrix (sparse or dense)
+
+# Convert DTM to a dataframe with cluster labels
+term_importance <- as.data.frame(as.matrix(BoW_dtm)) %>%
+  mutate(cluster = function_df$BoW_k_means_cluster) %>%               # Add cluster labels
+  group_by(cluster) %>%
+  summarise(across(everything(), mean)) %>%    # Mean term frequency per cluster
+  pivot_longer(-cluster, names_to = "term", values_to = "mean_tfidf") %>%
+  group_by(cluster) %>%
+  slice_max(mean_tfidf, n = 10) %>%           # Top 10 terms per cluster
+  arrange(cluster, desc(mean_tfidf))
+
+# Visualize
+cluster_comp <- ggplot(term_importance, aes(x = reorder(term, mean_tfidf), y = mean_tfidf, fill = factor(cluster))) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~cluster, scales = "free_y") +
+  labs(x = "Term", y = "Mean TF-IDF Weight", title = "Key Terms per Cluster")
+
+print(cluster_comp)
+```
+# Extract the LDA topics from the topic model.
+```{r}
+library(topicmodels)
+library(tidytext)
+
+# Assuming `lda_model` is your fitted LDA model
+top_terms <- tidy(BoW_lda_model, matrix = "beta") %>%  # Term-topic probabilities
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  arrange(topic, desc(beta))
+
+# Visualize
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col() +
+  facet_wrap(~topic, scales = "free_y") +
+  scale_y_reordered()
 ```

@@ -1,0 +1,472 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2")
+library("tximportData")
+library("ggplot2")
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+quant_fp <- paste(cwd, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+
+```{r}
+quant_dirs
+```
+
+```{r}
+# Create the txi import
+txi <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+```
+
+```{r}
+colnames(txi$abundance) <- sample_names
+colnames(txi$counts) <- sample_names
+colnames(txi$length) <- sample_names
+```
+
+```{r}
+runDESeq2 <- function(sample_names, txi, cond1, cond2){
+sample_info <- data.frame(
+    sample_names = sample_names,
+    condition = factor(ifelse(grepl(cond1, sample_names), cond1, 
+                              ifelse(grepl(cond2, sample_names), cond2, NA)))
+)
+sample_info <- sample_info[!is.na(sample_info$condition), ]
+
+samples_to_keep <- sample_info$sample_names
+print(samples_to_keep)
+
+# Subset txi
+txi_filtered <- list(
+  counts = txi$counts[, samples_to_keep],
+  abundance = txi$abundance[, samples_to_keep],
+  length = txi$length[, samples_to_keep],
+  countsFromAbundance = "scaledTPM"
+)
+dds <- DESeqDataSetFromTximport(txi = txi_filtered, colData = sample_info, design = ~condition)
+return(dds)
+}
+dds <- runDESeq2(sample_names, txi, "NC_1", "NC_ind_1")
+```
+
+```{r}
+dds <- DESeq(dds)
+```
+```{r}
+res <- results(dds)
+```
+
+```{r}
+plotMA(res)
+```
+```{r}
+dds2 = runDESeq2(sample_names, txi, "WT_1","NC_1" )
+```
+
+```{r}
+dds2 <- DESeq(dds2)
+res2 <- results(dds2)
+```
+```{r}
+plotMA(res2)
+```
+```{r}
+condition_1 = matrix(c("WT_1", "WT_ind_1", 
+                       "WT_1", "NC_1", 
+                       "WT_1", "NC_ind_1",
+                       "WT_1", "s4_1",
+                       "WT_1", "s4_ind_1"),
+                       nrow=5,
+                       ncol=2,
+                       byrow=TRUE)
+print(condition_1)
+```
+```{r}
+dds1_list = list()
+for(row in 1:nrow(condition_1)){
+  cond1 = condition_1[row,1]
+  cond2 = condition_1[row,2]
+  dds = runDESeq2(sample_names, txi, cond1, cond2)
+  dds1_list = append(dds_list, list(dds))
+}
+print(dds1_list)
+```
+```{r}
+results1_list = list()
+for(i in 1:length(dds1_list)){
+  dds = dds1_list[[i]]
+  dds = DESeq(dds)
+  result = results(dds)
+  results1_list = append(results1_list, list(result))
+  
+  res <- as.data.frame(results(dds))
+  
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  filename <- paste0("deseq2Timepoint1_", timestamp, "_", condition_1[i,1], "_", condition_1[i,2], ".csv")
+  write.csv(res, file = filename, row.names=TRUE)
+  
+  res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Create the volcano plot
+# Create the volcano plot without the title, with legend inside, and larger global font size
+  print(ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+       geom_point(alpha = 0.6, size = 1.5) +
+        scale_color_manual(values = c("gray", "red")) +
+        theme_minimal(base_size = 14) +  # Set a base global font size (adjust as needed)
+        geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+        geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+        labs(title = NULL,  # Remove the title
+             x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Adjust text size for labels  # Adjust the y-axis range # Specify breaks for y-axis ticks
+        theme(
+          legend.position = c(0.89, 0.5),  # Move the legend inside the plot on the right side
+          legend.title = element_text(size = 14),  # Increase the font size of the legend title
+          legend.text = element_text(size = 12),  # Increase the font size of the legend text
+          plot.title = element_blank(),  # Ensure no title
+          text = element_text(size = 14),  # Global font size adjustment for the entire plot
+          legend.background = element_rect(color = "black", fill = NULL)  # Add a black border around the legend
+        )
+  )
+}
+```
+```{r}
+condition_3 = matrix(c("WT_3", "WT_ind_3", 
+                       "WT_3", "NC_3", 
+                       "WT_3", "NC_ind_3",
+                       "WT_3", "s4_3",
+                       "WT_3", "s4_ind_3"),
+                       nrow=5,
+                       ncol=2,
+                       byrow=TRUE)
+print(condition_3)
+```
+```{r}
+dds3_list = list()
+for(row in 1:nrow(condition_3)){
+  cond1 = condition_3[row,1]
+  cond2 = condition_3[row,2]
+  dds = runDESeq2(sample_names, txi, cond1, cond2)
+  dds3_list = append(dds3_list, list(dds))
+}
+print(dds3_list)
+```
+
+```{r}
+results3_list = list()
+for(i in 1:length(dds3_list)){
+  dds = dds3_list[[i]]
+  dds = DESeq(dds)
+  result = results(dds)
+  results2_list = append(results3_list, list(result))
+  
+  res <- as.data.frame(results(dds))
+  ## Save timepoint one data to a csv.
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  filename <- paste0("deseq2Timepoint3_", timestamp, "_", condition_3[i,1], "_", condition_3[i,2], ".csv")
+  write.csv(res, file = filename, row.names=TRUE)
+
+  res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Create the volcano plot
+# Create the volcano plot without the title, with legend inside, and larger global font size
+  print(ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+       geom_point(alpha = 0.6, size = 1.5) +
+        scale_color_manual(values = c("gray", "red")) +
+        theme_minimal(base_size = 14) +  # Set a base global font size (adjust as needed)
+        geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+        geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+        labs(title = NULL,  # Remove the title
+             x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Adjust text size for labels  # Adjust the y-axis range # Specify breaks for y-axis ticks
+        theme(
+          legend.position = c(0.89, 0.5),  # Move the legend inside the plot on the right side
+          legend.title = element_text(size = 14),  # Increase the font size of the legend title
+          legend.text = element_text(size = 12),  # Increase the font size of the legend text
+          plot.title = element_blank(),  # Ensure no title
+          text = element_text(size = 14),  # Global font size adjustment for the entire plot
+          legend.background = element_rect(color = "black", fill = NULL)  # Add a black border around the legend
+        )
+  )
+}
+```
+```{r}
+library(tximeta)
+sample_names
+sample_info
+files <- file.path(quant_fp, quant_files)
+quant_fp
+files
+```
+```{r}
+coldata <- sample_info
+coldata
+coldata$names <- paste(coldata$names, "quant", sep="_")
+coldata$files <- files
+files
+file.exists(coldata$files)
+```
+
+```{r}
+splitstrs <- strsplit(sample_names, "\\_|\\-")
+string = splitstrs[[1]]
+length(splitstrs)
+
+```
+
+```{r}
+strain<-c()
+treatment<-c()
+day<-c()
+replicate=c()
+for (i in 1:length(sample_names)){
+  strippedConds = strsplit(sample_names, "\\_|\\-")
+  strain <- append(strain, strippedConds[[i]][2])
+  if (length(strippedConds[[i]]) == 4){
+    treatment <- append(treatment, "untreated")
+    day <- append(day, strippedConds[[i]][3])
+    replicate <- append(replicate, strippedConds[[i]][4])
+  }
+  else if (length(strippedConds[[i]]) == 5){
+    treatment = append(treatment, "treated")
+    day <- append(day, strippedConds[[i]][4])
+    replicate <- append(replicate, strippedConds[[i]][5])
+  }
+  
+}
+```
+```{r}
+strain
+treatment 
+day
+replicate
+```
+```{r}
+si_complete <-data.frame(samples=sample_names,
+                         strain=strain,
+                         treatment=treatment,
+                         day=day,
+                         replicate=replicate)
+```
+```{r}
+si_complete
+```
+```{r}
+coldata
+```
+```{r}
+coldata <- si_complete
+coldata
+coldata$names <- coldata$samples
+coldata$files <- files
+coldata
+```
+```{r}
+se <- tximeta(coldata) #SummarizedExperiment Object
+```
+```{r}
+head(assay(se), 3)
+```
+```{r}
+colSums(assay(se))
+```
+```{r}
+se$treatment
+```
+```{r}
+library(magrittr)
+if (!is.factor(se$treatment)){
+  se$treatment <- factor(se$treatment)
+}
+se$treatment %<>% relevel("untreated")
+se$day 
+
+```
+```{r}
+se$treatment
+
+```
+```{r}
+head(se$treatment)
+```
+
+```{r}
+round(colSums(assay(se))/1e6, 3)
+
+```
+```{r}
+dds <- DESeqDataSet(se, design = ~ replicate + strain + treatment)
+
+```
+# Run Prefiltering because DESeqDataSet contains several rows that contain zeros or small amounts. Prefiltering will remove these and allow for increased speed when running functions.
+```{r}
+nrow(dds)
+smallestGroupSize <- 4
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+nrow(dds)
+
+
+```
+
+# Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
+```{r}
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+library("vsn")
+meanSdPlot(cts, ranks = FALSE)
+
+log.cts.one <- log2(cts + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+# Now we will compare the variance stabilizing transformation (VST), regularized-logarithm transformation (rlog), and log2 transformation.
+```{r}
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+head(assay(vsd), 3)
+```
+```{r}
+rld <- rlog(dds, blind = FALSE)
+head(assay(rld), 3)
+```
+```{r}
+library("dplyr")
+library("ggplot2")
+
+dds <- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+lvls <- c("log2(x + 1)", "vst", "rlog")
+df$transformation <- factor(df$transformation, levels=lvls)
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+# Now we can look at the euclidean distance between the sample to check for similarity between them.
+```{r}
+sampleDists <- dist(t(assay(vsd)))
+sampleDists
+```
+# And Create a heatmap to visualize.
+```{r}
+library("pheatmap")
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( vsd$treatment, vsd$strain, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+# Do the same using a poisson distance.
+```{r}
+library("PoiClaClu")
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$treatment, dds$strain, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+
+```
+# Finally with a PCA.
+```{r}
+plotPCA(vsd, intgroup = c("treatment", "strain"))
+```
+```{r}
+pcaData <- plotPCA(vsd, intgroup = c( "treatment", "strain"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = treatment, shape = strain)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")
+```
+# Finally, finally with a generalized PCA (GLM-PCA)
+```{r}
+library("glmpca")
+gpca <- glmpca(counts(dds), L=2)
+gpca.dat <- gpca$factors
+gpca.dat$dex <- dds$treatment
+gpca.dat$cell <- dds$strain
+
+ggplot(gpca.dat, aes(x = dim1, y = dim2, color = dex, shape = cell)) +
+  geom_point(size =3) + coord_fixed() + ggtitle("glmpca - Generalized PCA")
+```
+# multidimensional scaling plot.
+```{r}
+mds <- as.data.frame(colData(vsd))  %>%
+         cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = treatment, shape = strain)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
+```
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res
+```
+```{r}
+topGene <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene = topGene, intgroup=c("treatment"))
+```
+```{r}
+library("ggbeeswarm")
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("treatment","strain"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = treatment, y = count, color = strain)) +
+  scale_y_log10() +  geom_beeswarm(cex = 3)
+```
+```{r}
+ggplot(geneCounts, aes(x = treatment, y = count, color = strain, group = strain)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line()
+```
+```{r}
+library("apeglm")
+resultsNames(dds)
+
+res <- lfcShrink(dds, coef="treatment_treated_vs_untreated", type="apeglm")
+plotMA(res, ylim = c(-5, 5))
+res.noshr <- results(dds, name="treatment_treated_vs_untreated")
+plotMA(res.noshr, ylim = c(-5, 5))
+plotMA(res, ylim = c(-5,5))
+topGene <- rownames(res)[which.min(res$padj)]
+with(res[topGene, ], {
+  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+})
+hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+```
+```{r}
+library("genefilter")
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+mat  <- assay(vsd)[ topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("strain","treatment")])
+pheatmap(mat, annotation_col = anno)
+```
+

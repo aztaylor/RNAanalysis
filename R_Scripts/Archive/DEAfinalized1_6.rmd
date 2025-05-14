@@ -1,0 +1,1007 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2")
+library("tximportData")
+library("ggplot2")
+library("tximeta")
+library("magrittr")
+library("dplyr")
+library("tidyverse")
+library("ggpubr")
+library("pheatmap")
+library("grid")
+library("ggplotify")
+library("gridExtra")
+library("vsn")
+library("RColorBrewer")
+library("PoiClaClu")
+library("glmpca")
+library("ggbeeswarm")
+library("apeglm")
+library("genefilter")
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+par_dir <- dirname(cwd)
+quant_fp <- paste(par_dir, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+
+```{r}
+quant_fp
+```
+
+```{r}
+# Create the txi import
+txi <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+```
+
+```{r}
+colnames(txi$abundance) <- sample_names
+colnames(txi$counts) <- sample_names
+colnames(txi$length) <- sample_names
+```
+
+```{r}
+splitstrs <- strsplit(sample_names, "\\_|\\-")
+string = splitstrs[[1]]
+#length(splitstrs)
+#splitstrs
+```
+
+```{r}
+genotype <- c()
+treatment <- c()
+timepoint <- c()
+replicate <- c()
+for (i in 1:length(sample_names)){
+  strippedConds = strsplit(sample_names, "\\_|\\-")
+  genotype <- append(genotype, strippedConds[[i]][2])
+  if (length(strippedConds[[i]]) == 4){
+    treatment <- append(treatment, "Nind")
+    if (strippedConds[[i]][3] == 1){
+      timepoint <- append(timepoint, 5)
+    } else if (strippedConds[[i]][3] == 3){
+      timepoint <- append(timepoint, 18)
+    }
+    replicate <- append(replicate, strippedConds[[i]][4])
+  }
+  else if (length(strippedConds[[i]]) == 5){
+    treatment = append(treatment, "ind")
+    if (strippedConds[[i]][4] == 1){
+      timepoint <- append(timepoint, 5)
+    } else if (strippedConds[[i]][4] == 3){
+      timepoint <- append(timepoint, 18)
+    }
+    replicate <- append(replicate, strippedConds[[i]][5])
+  }
+  
+}
+```
+```{r}
+#genotype
+#treatment 
+#timepoint
+#replicate
+```
+```{r}
+samples <- sub("_L00",".",sample_names)
+si_complete <-data.frame(samples=samples,
+                         genotype=genotype,
+                         treatment=treatment,
+                         timepoint=timepoint,
+                         replicate=replicate)
+```
+```{r}
+si_complete
+```
+```{r}
+coldata <- si_complete
+coldata
+coldata$names <- sub("_L00[0-9]+","",sample_names)
+coldata$files <- paste(quant_fp, quant_files, sep="/")
+coldata
+```
+```{r}
+coldata <- subset(coldata, select = -replicate)
+coldata
+```
+
+```{r}
+se <- tximeta(coldata) #SummarizedExperiment Object
+```
+```{r}
+if (!is.factor(se$treatment)){
+  se$treatment <- factor(se$treatment)
+}
+if (!is.factor(se$timepoint)){
+  se$timepoint <- factor(se$timepoint)
+}
+if (!is.factor(se$genotype)){
+  se$genotype <- factor(se$genotype)
+}
+se$treatment %<>% relevel("Nind") # Nind is the base line to compare to. 
+se$timepoint %<>% relevel("5")
+se$genotype %<>% relevel("NC")
+```
+
+
+```{r}
+#se$genotype
+
+```
+```{r}
+#head(se$treatment)
+```
+
+```{r}
+#round(colSums(assay(se))/1e6, 3)
+
+```
+```{r}
+design = ~ genotype + timepoint + treatment + genotype:timepoint + genotype:treatment + genotype:timepoint:treatment
+
+dds <- DESeqDataSet(se, design = design)
+#dds <- collapseReplicates(dds, dds$samples, dds$replicate)
+meanSdPlot(assay(dds), ranks = FALSE)
+
+log.cts.one <- log2(assay(dds) + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+# Run Prefiltering because DESeqDataSet contains several rows that contain zeros or small amounts. Prefiltering will remove these and allow for increased speed when running functions.
+```{r}
+nrow(dds)
+smallestGroupSize <- 4
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+nrow(dds)
+```
+
+# Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
+```{r}
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+meanSdPlot(cts, ranks = FALSE)
+
+log.cts.one <- log2(cts + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+# Now we will compare the variance stabilizing transformation (VST), regularized-logarithm transformation (rlog), and log2 transformation.
+```{r}
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+#head(assay(vsd), 3)
+```
+```{r}
+rld <- rlog(dds, blind = FALSE)
+#head(assay(rld), 3)
+```
+```{r}
+dds <- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, c(7,11)]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, c(7,11)]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, c(7,11)]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+lvls <- c("log2(x + 1)", "vst", "rlog")
+df$transformation <- factor(df$transformation, levels=lvls)
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+# Now we can look at the euclidean distance between the sample to check for similarity between them.
+```{r}
+sampleDists <- dist(t(assay(dds)))
+```
+# And Create a heatmap to visualize.
+```{r}
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( dds$treatment, dds$genotype, dds$timepoint, sep = "-" )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+# Do the same using a poisson distance.
+```{r}
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$treatment, dds$genotype, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+# Finally with a PCA.
+```{r}
+plotPCA(vsd, intgroup = c("treatment", "genotype", "timepoint"))
+```
+```{r}
+pcaData <- plotPCA(vsd, intgroup = c( "treatment", "genotype", "timepoint"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = treatment, shape = genotype)) +
+  geom_point(size =3, mapping = aes(alpha = timepoint)) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")
+```
+# Finally, finally with a generalized PCA (GLM-PCA)
+```{r}
+gpca <- glmpca(counts(dds), L=2)
+gpca.dat <- gpca$factors
+gpca.dat$treatment <- dds$treatment
+gpca.dat$genotype <- dds$genotype
+gpca.dat$timepoint <- dds$timepoint
+
+ggplot(gpca.dat, aes(x = dim1, y = dim2, color = treatment, shape = genotype)) + geom_point(size =3, mapping = aes(aplha = timepoint)) + coord_fixed() + ggtitle("glmpca - Generalized PCA")
+```
+# multidimensional scaling plot.
+```{r}
+mds <- as.data.frame(colData(vsd))  %>%
+         cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = treatment, shape = genotype, alpha = timepoint)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
+```
+```{r}
+dds <- DESeq(dds)
+rld <- rlog(dds, blind = FALSE)
+res <- results(dds, contrast = c("treatment", "ind", "Nind"))
+resultsNames(dds)
+model.matrix(design, as.data.frame(colData(dds)))
+```
+```{r}
+topGene <- rownames(res)[which.max(res$log2FoldChange)]
+plotCounts(dds, gene = topGene, intgroup=c("treatment", "genotype", "timepoint"))
+```
+```{r}
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("treatment","genotype", "timepoint"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, shape = treatment)) +
+  scale_y_log10() +  geom_beeswarm(cex = 3)
+```
+```{r}
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = interaction(genotype, treatment), shape = treatment)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line()
+```
+```{r}
+dds <- DESeq(dds)
+rld <- rlog(dds, blind = FALSE)
+resultsNames(dds)
+```
+```{r}
+res <- lfcShrink(dds, coef="treatment_ind_vs_Nind" , type="apeglm")
+plotMA(res, ylim = c(-10, 10))
+res.noshr <- results(dds, name="timepoint_18_vs_5" )
+plotMA(res.noshr, ylim = c(-10, 10))
+plotMA(res, ylim = c(-10,10))
+topGene <- rownames(res)[which.min(res$log2FoldChange)]
+with(res[topGene, ], {
+  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+})
+hist(res.noshr$pvalue[res.noshr$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+```
+```{r}
+ddsNR <- DESeqDataSet(se, design = design)
+```
+
+```{r, fig.height=12, fig.width=7}
+font = "Helvetica"
+counts_df <- data.frame(counts(ddsNR))
+counts_df <- counts_df[rowSums(counts_df >= 10) >= 4, ]
+
+counts_df <- log(counts_df,10)
+
+var_counts <- apply(counts_df, MARGIN=1, FUN= var)
+var_counts_df = data.frame(Var=var_counts)
+rownames(var_counts_df) <- rownames(counts_df)
+
+varCounts_l2f_df <- counts_df[order(var_counts_df$Var, decreasing=FALSE), , drop=FALSE]
+varCounts_l2f_df
+
+col_names = colnames(varCounts_l2f_df)
+col_names
+cleaned_col_names <- sub(".*ATEY090523\\.", "", col_names)
+cleaned_col_names
+
+# Extract the first number and save to a new array
+timepoint <- sub(".*_(\\d+).*", "\\1", cleaned_col_names)
+timepoints <- paste("Timepoint: ", timepoint, "hr.")
+
+# Combine the second number (if present) with the word portion
+processed_sample <- sub("^(.*?)_(\\d+)(\\..*)?$", "\\1\\3", cleaned_col_names)
+processed_sample
+
+varCounts_l2f_df <- varCounts_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+varCounts_l2f_df <- varCounts_l2f_df %>%
+  mutate(
+    timepoint = paste("Timepoint: ", as.numeric(str_extract(colname, "(?<=_)[0-9]+")), "hr.")  # Extract the number after the underscore and convert to numeric
+  )
+columns <- c("Non-Targeting\ngRNA", "Targeting\ngRNA", "Non-Targeting\ngRNA", "Targeting\ngRNA")
+
+varCounts_l2f_df$colname  <- factor(varCounts_l2f_df$colname, levels=unique(varCounts_l2f_df$colname))
+varCounts_l2f_df$timepoint <- factor(varCounts_l2f_df$timepoint, levels=unique(varCounts_l2f_df$timepoint))
+varCounts_l2f_df
+varCounts_l2f_df$rowname<-factor(varCounts_l2f_df$rowname, levels=unique(varCounts_l2f_df$rowname))
+
+fsize = 5
+
+Counts_top_hits <- ggplot(varCounts_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(angle=270, family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap( ~timepoint, scales="free_x" ) +
+  scale_x_discrete(labels = unique(processed_sample)) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill="Log10Counts")
+print(Counts_top_hits)
+ggsave("../Figures/CountsTopHits.png", Counts_top_hits, dpi=600)
+```
+
+
+
+```{r, fig.height=7, fig.width=7}
+n_topgenes = 50
+topVarGenes <- head(order(rowVars(assay(rld)), decreasing = TRUE), n_topgenes)
+mat  <- assay(rld)[ topVarGenes, ]
+mat
+col_order = c("ATEY090523-WT_1",
+              "ATEY090523-WT_ind_1",
+              "ATEY090523-NC_1",
+              "ATEY090523-NC_ind_1",
+              "ATEY090523-s4_1",
+              "ATEY090523-s4_ind_1",
+              "ATEY090523-WT_3",
+              "ATEY090523-WT_ind_3",
+              "ATEY090523-NC_3",
+              "ATEY090523-NC_ind_3",
+              "ATEY090523-s4_3",
+              "ATEY090523-s4_ind_3"
+)
+col_names = c("WT 5 hr.",
+              "WT Induced 5 hr.",
+              "NC 5 hr.", 
+              "NC Induced 5 hr.",
+              "s4 5 hr.",
+              "s4 Induced 5 hr.",
+              "WT 18 hr.",
+              "WT Induced 18 hr.",
+              "NC 18 hr.", 
+              "NC Induced 18 hr.",
+              "s4 18 hr.",
+              "s4 Induced 18 hr."
+)
+mat <- mat[,col_order]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("genotype","treatment", "timepoint")])
+pheatmap(mat, 
+         annotation_col = anno,
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(100),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=FALSE,
+         cluster_rows =FALSE,
+         labels_col = col_names
+)
+```
+```{r, fig.height=7, fig.width=7}
+res <- results(dds, contrast = c("treatment", "ind", "Nind"))
+res
+
+resOrdered <- res[order(res$log2FoldChange), ]
+top_genes <- head(resOrdered, n_topgenes)
+
+inds <- rownames(top_genes)
+mat <- assay(rld)[inds,]
+
+col_order = c("ATEY090523-WT_1",
+              "ATEY090523-WT_ind_1",
+              "ATEY090523-NC_1",
+              "ATEY090523-NC_ind_1",
+              "ATEY090523-s4_1",
+              "ATEY090523-s4_ind_1",
+              "ATEY090523-WT_3",
+              "ATEY090523-WT_ind_3",
+              "ATEY090523-NC_3",
+              "ATEY090523-NC_ind_3",
+              "ATEY090523-s4_3",
+              "ATEY090523-s4_ind_3"
+)
+col_names = c("WT 5 hr.",
+              "WT Induced 5 hr.",
+              "NC 5 hr.", 
+              "NC Induced 5 hr.",
+              "s4 5 hr.",
+              "s4 Induced 5 hr.",
+              "WT 18 hr.",
+              "WT Induced 18 hr.",
+              "NC 18 hr.", 
+              "NC Induced 18 hr.",
+              "s4 18 hr.",
+              "s4 Induced 18 hr."
+)
+mat <- mat[,col_order]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("genotype","treatment", "timepoint")])
+log2FC_heatmap <- pheatmap(mat, 
+         annotation_col = anno,
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(100),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=FALSE,
+         cluster_rows=FALSE,
+         labels_col = col_names
+)
+resOrdered
+
+```
+```{r, fig.height=20, fig.width=7}
+contrast = list("treatment_ind_vs_Nind")
+resNC <- results(dds, contrast = contrast)#("genotypeNC.timepoint18.treatmentind"))
+ress4 <- results(dds, contrast = contrast)#("genotypeNC.timepoint18.treatmentind"))
+sig_resNC <- rownames(subset(resNC, padj < 0.01))
+sig_ress4 <- rownames(subset(ress4, padj < 0.01))
+
+l2f_NC = as.data.frame(resNC$log2FoldChange)
+rownames(l2f_NC) <- rownames(resNC)
+colnames(l2f_NC) <- ("WT 5hr untreated vs. NC 18hr treated")
+
+l2f_s4 <- as.data.frame(ress4$log2FoldChange)
+rownames(l2f_s4) <- rownames(ress4)
+colnames("WT 5hr untreated vs. st 18hr treated")
+
+l2f_matrix <- cbind(l2f_NC, l2f_s4)
+l2f_matrix <- l2f_matrix[sig_ress4, ]
+
+# Generate heatmap
+pheatmap(l2f_matrix, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(50),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=FALSE,
+         cluster_rows=FALSE,
+)
+
+```
+```{r, fig.height=25, fig.width=15}
+coldata5 = coldata[coldata$timepoint == 5,]
+coldata18 = coldata[coldata$timepoint == 18,]
+
+#coldata5 <-subset(coldata5, select = -timepoint)
+#coldata18 <- subset(coldata18, select = -timepoint)
+se5 <- tximeta(coldata5)
+se18 <- tximeta(coldata18)
+coldata5
+
+se5$treatment <- relevel(factor(se5$treatment), ref = "Nind") # Nind is the base line to compare to.
+se5$genotype <- relevel(factor(se5$genotype), ref = "NC")
+
+se18$treatment <- relevel(factor(se18$treatment), ref = "Nind") 
+se18$genotype <- relevel(factor(se18$genotype), ref = "NC") 
+se18$timepoint <- factor(se18$timepoint)
+
+design <- ~ genotype + treatment + genotype:treatment
+dds5 <- DESeqDataSet(se5, design = design)
+dds18 <- DESeqDataSet(se18, design = design)
+
+dds5 <- DESeq(dds5)
+dds18 <- DESeq(dds18)
+
+rld5 <- rlog(dds5, blind = FALSE)
+rld18 <- rlog(dds18, blind = FALSE)
+
+resultsNames(dds5)
+resultsNames(dds18)
+
+contrast = c("genotype",
+             "s4",
+             "NC"
+)
+
+res5s4 <- results(dds5, contrast = contrast)
+res18s4 <- results(dds18, contrast = contrast)
+
+n_topgenes = 4577
+n_topVarGenes = 4577
+pval_cutoff =0.01
+topVarGenes <- head(order(rowVars(assay(dds)), decreasing = TRUE), n_topgenes)
+
+sig_res5s4 <- subset(res5s4, pvalue < pval_cutoff)
+sig_res18s4 <- subset(res18s4, pvalue < pval_cutoff)
+
+sorted_sig_res5s4 <- res5s4[order(sig_res5s4$log2FoldChange, decreasing = TRUE), ]
+sorted_sig_res18s4 <- res18s4[order(sig_res18s4$log2FoldChange, decreasing = TRUE), ]
+print(sorted_sig_res5s4)
+
+l2f_5_s4 <- as.data.frame(na.omit(sorted_sig_res5s4$log2FoldChange))
+rownames(l2f_5_s4) <- rownames(sorted_sig_res18s4[!is.na(sorted_sig_res5s4)])
+#l2f_5_s4 <- l2f_5_s4[topgenes5s4, , drop=FALSE]
+#l2f_5_s4$rownames <- topgenes5s4
+#colnames("WT 5hr untreated vs. st 18hr treated")
+
+l2f_18_s4 <- as.data.frame(na.omit(sorted_sig_res18s4$log2FoldChange))
+rownames(l2f_18_s4) <- rownames(sorted_sig_res5s4[!is.na(sorted_sig_res5s4)])
+#l2f_18_s4 <- l2f_18_s4[topgenes18s4, , drop=FALSE]
+#l2f_18_s4$rownames <- topgenes18s4
+#colnames("WT 5hr untreated vs. st 18hr treated")
+
+l <- list(l2f_5_s4, l2f_18_s4)
+l2f_df <- merge(
+  l2f_5_s4,
+  l2f_18_s4,
+  by = "row.names",
+  all = TRUE
+)
+rownames(l2f_df) <- l2f_df$rownames
+print(l2f_df)
+l2f_df <- l2f_df[,-1]
+l2f_raw_df <- data.frame(l2f_df)
+l2f_raw_df[is.na(l2f_raw_df)]<-0
+#l2f_df <- na.omit(l2f_df)
+colnames(l2f_raw_df) <- c("Targeting5hr", "Targeting18hr")
+colnames(l2f_df) <- c("Targeting5hr", "Targeting18hr")
+
+l2f_filtered_df <- l2f_raw_df[!(l2f_raw_df$Targeting5hr == 0 & l2f_raw_df$Targeting18hr == 0), ]
+
+
+l2f_df_tv <- l2f_filtered_df[topVarGenes, ] # Total Variance accross samples.
+l2f_df_5_s4 <- l2f_filtered_df[order(abs(l2f_filtered_df$Targeting5hr), decreasing = TRUE), , drop=FALSE]
+
+# Result
+print(l2f_filtered_df)
+
+clusterRows <- FALSE
+clusterCols <- FALSE
+
+# Generate heatmap
+phm <- pheatmap(l2f_raw_df, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(n_topgenes),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=clusterCols,
+         cluster_rows=clusterRows,
+)
+
+phm_tv <- pheatmap(l2f_df_tv, 
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdGy")))(n_topgenes),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=clusterCols,
+         cluster_rows=clusterRows,
+)
+phm_5_s4 <- pheatmap(l2f_df_5_s4, 
+         color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdGy")))(n_topgenes),
+         angle_col = 315,
+         width = fig.width,
+         height = fig.height,
+         cluster_cols=clusterCols,
+         cluster_rows=clusterRows,
+)
+
+grid.arrange(as.grob(phm), as.grob(phm_tv), as.grob(phm_5_s4), ncol=3)
+
+```
+
+
+```{r}
+genes <- c(
+  # SOS responsive, LexA-dependent genes
+  "polB", "recA", "recN", "sbmC", "ssb", "sulA", "uvrA", "uvrB",
+  
+  # LexA-independent genes
+  "dnaA", "nrdA", "nrdB", "cydA", "tdcB", "tdcC", "cstA", "sspA", "sspB",
+  "deoA", "deoB", "deoC", "dnaG", "gmk", "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG",
+  
+  # Anaerobic induction
+  "cydA", "tdcB", "tdcC",
+  
+  # Starvation induction
+  "cstA", "sspA", "sspB",
+  
+  # Other regulation
+  "deoA", "deoB", "deoC", "dnaG", "gmk", "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG",
+  
+  # Transcription-related genes
+  "fliA", "fliZ", "greA", "rho", "rpoA", "rpoD",
+  
+  # Translation-related genes
+  "fusA", "infA", "rnpA", "rpmB", "rpmG", "rpmH", "rpsG", "rpsU", "trmD",
+  
+  # Hypothetical or unknown function genes
+  "yabO", "yagP", "ychB", "ydiY", "yebE", "yebF", "yeeN", "yfgB", "yfhN",
+  "yfhO", "yghB", "yhjG", "yi52–10", "yibB", "yjeS", "ylaC", "yleA"
+)
+
+# Create a data frame for norfloxacin expression values from Table 1
+nor_df <- data.frame(
+  Gene = c("polB", "recA", "recN", "sbmC", "ssb", "sulA", "uvrA", "uvrB", "dnaA", "nrdA", "nrdB",
+           "fliA", "fliZ", "greA", "rho", "rpoA", "rpoD", "deoA", "deoB", "deoC", "dnaG", "gmk",
+           "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG", "yabO", "yagP", "ychB", "ydiY", "yebE",
+           "yfgB", "yfhN", "yfhO", "yghB", "yhjG", "yi52–10", "yibB", "yjeS", "ylaC", "yleA"),
+  
+  Nor_0.5_MIC = c(0.93, 3.79, 2.36, 1.14, 0.85, 1.36, 1.49, 1.25, 0.95, 1.48, 1.27, 1.18, 0.69, 
+                  0.99, 1.04, 0.86, 0.99, 1.12, 1.21, 1.19, 0.98, 1.03, 0.97, 0.76, 0.84, 1.02, 
+                  0.98, 1.04, 0.93, 0.97, 0.86, 0.86, 1.09, 0.97, 0.93, 0.83, 0.98, 0.87, 1.02, 
+                  1.00, 0.96, 0.85, 0.94),
+  
+  Nor_1_MIC = c(1.22, 6.37, 3.65, 2.78, 1.06, 2.84, 2.12, 1.23, 1.25, 1.30, 1.08, 0.88, 0.71, 
+                0.97, 1.02, 0.80, 2.05, 1.28, 1.29, 1.15, 1.11, 1.06, 0.88, 1.00, 0.85, 0.92, 
+                0.92, 0.94, 0.93, 0.86, 0.97, 0.88, 0.97, 0.89, 0.89, 0.75, 0.91, 0.69, 0.86, 
+                0.94, 0.81, 0.92, 0.81),
+  
+  Nor_2_MIC = c(1.31, 11.10, 4.82, 5.59, 1.00, 4.50, 1.97, 1.39, 1.16, 1.65, 1.48, 0.98, 0.39, 
+                1.93, 0.67, 0.75, 4.64, 1.32, 3.25, 1.42, 1.69, 2.35, 0.84, 0.97, 0.81, 1.03, 
+                1.21, 1.03, 1.07, 1.03, 1.62, 0.92, 1.01, 1.62, 1.27, 1.74, 1.08, 0.94, 1.03, 
+                1.53, 1.21, 2.39, 1.43),
+  
+  Nor_33_MIC = c(4.84, 47.61, 16.14, 0.93, 2.94, 6.44, 21.63, 3.40, 3.65, 8.92, 3.96, 2.81, 
+                 2.72, 4.35, 3.23, 0.35, 7.85, 2.25, 4.09, 5.24, 4.69, 2.69, 7.07, 5.09, 2.64, 
+                 4.54, 5.11, 7.41, 3.71, 2.83, 5.21, 3.46, 1.52, 2.09, 3.18, 4.44, 4.08, 2.90, 
+                 2.35, 3.18, 2.78, 3.18, 3.56),
+  
+  Nor_133_MIC = c(4.27, 47.55, 11.69, 0.83, 3.75, 4.98, 46.35, 4.71, 3.68, 5.17, 2.07, 4.44, 
+                  5.25, 3.86, 4.09, 0.22, 9.45, 1.75, 6.07, 6.83, 5.73, 3.95, 8.85, 6.02, 3.64, 
+                  5.05, 5.35, 9.76, 3.61, 3.56, 3.63, 2.44, 1.66, 3.01, 3.26, 5.28, 6.82, 4.93, 
+                  3.43, 4.68, 3.98, 6.25, 6.25)
+)
+
+# View the data frame
+rownames(nor_df)<-nor_df$Gene
+nor_df <- log(nor_df[,-1], 2)
+```
+
+```{r}
+#l2f_5_s4 <- na.omit(l2f_5_s4)
+#l2f_5_s4$rownames <- rownames(l2f_5_s4)
+#l2f_5_NC <- na.omit(l2f_5_NC)
+#l2f_5_NC$rownames <- rownames(l2f_5_NC)
+#l2f_18_s4 <- na.omit(l2f_18_s4)
+#l2f_18_s4$rownames <- rownames(l2f_18_s4)
+#l2f_18_NC <- na.omit(l2f_18_NC)
+#l2f_18_NC$rownames <- rownames(l2f_18_NC)
+#l <- list(l2f_5_NC, l2f_5_s4, l2f_18_NC, l2f_18_s4)
+#l2f_df <- Reduce(function(x, y) merge(x, y, by="rownames", all=T), l)
+
+#rownames(l2f_df) <- l2f_df$rownames
+#l2f_df <- l2f_df[,-1]
+#colnames(l2f_df) <- c("CasRx-gRNA-NT 5hr.", "CasRx-gRNA-s4 5hr.", "CasRx-gRNA-NT 18hr.", "CasRx-gRNA-s4 18hr.")
+
+gene_overlap <- rownames(nor_df) %in% rownames(l2f_filtered_df)
+subset_l2f_df <- l2f_filtered_df[rownames(l2f_filtered_df) %in% rownames(nor_df), , drop=FALSE]
+subset_nor_df <- nor_df[rownames(subset_l2f_df), , drop=FALSE]
+
+subset_df <- Reduce(function(x,y) merge(x,y, by='row.names', all=T), list(subset_l2f_df, subset_nor_df))
+rownames(subset_df)<-subset_df$Row.names
+subset_df <- subset_df[, -1]
+```
+
+```{r}
+var_nor <- apply(nor_df, MARGIN=1, FUN= var)
+var_nor_df = data.frame(Var=var_nor)
+rownames(var_nor_df) <- rownames(nor_df)
+
+varNor_l2f_df <- nor_df[order(var_nor_df$Var, decreasing=FALSE), , drop=FALSE]
+varNor_l2f_df
+
+varNor_l2f_df <- varNor_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+varNor_l2f_df <- varNor_l2f_df %>% mutate(timepoint = case_when(
+  colname == "Nor_0.5_MIC" ~ "Norfloxacin 0.5MIC",
+  colname == "Nor_1_MIC" ~ "Norfloxacin 1MIC",
+  colname == "Nor_2_MIC" ~ "Norfloxacin 2MIC",
+  colname == "Nor_33_MIC" ~ "Norfloxacin 33MIC",
+  colname == "Nor_133_MIC" ~ "Norfloxacin 133MIC"
+))
+
+columns <- c("Norfloxacin\n0.5MIC", "Norfloxacin\n1MIC", "Norfloxacin\n2MIC", "Norfloxacin\n33MIC", "Norfloxacin\n133MIC")
+
+varNor_l2f_df$colname  <- factor(varNor_l2f_df$colname, levels=c("Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
+varNor_l2f_df$timepoint <- factor(varNor_l2f_df$timepoint, levels=unique(varNor_l2f_df$timepoint))
+varNor_l2f_df
+varNor_l2f_df$rowname<-factor(varNor_l2f_df$rowname, levels=unique(varNor_l2f_df$rowname))
+
+fsize = 7
+
+nor_top_hits <- ggplot(varNor_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill="Log2fold\nChange")
+print(nor_top_hits)
+ggsave("../Figures/NorTopHits.png", nor_top_hits, dpi=600)
+```
+
+```{r}
+x_ann1 <- textGrob("Timepoint: 5hr.", gp=gpar(fontsize=10))
+x_ann2 <- textGrob("Timepoint: 18hr.", gp=gpar(fontsize=10))
+
+subset_sum_df<- data.frame(sort(rowSums(abs(subset_df)), decreasing=FALSE))
+subset_df <- subset_df[rownames(subset_sum_df),]
+
+subset_df2 <- subset_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+subset_df2 <- subset_df2 %>% mutate(group = case_when(
+  grepl("Targeting", colname)~"dCasRx",
+  grepl("Nor", colname)~"Norfloxacin"
+))
+subset_df2 <- subset_df2 %>% mutate(label = case_when(
+  colname == "Targeting5hr" ~ "Targeting\ngRNA 5hr",
+  colname == "Targeting18hr" ~ "Targeting\ngRNA 18hr",
+  colname == "Nor_0.5_MIC" ~ "Nofloxacin\n0.5MIC",
+  colname == "Nor_1_MIC" ~ "Nofloxacin\n1MIC",
+  colname == "Nor_2_MIC" ~ "Nofloxacin\n2MIC",
+  colname == "Nor_33_MIC" ~ "Nofloxacin\n33MIC",
+  colname == "Nor_133_MIC" ~ "Nofloxacin\n133MIC"
+))
+
+subset_df2$label <- factor(subset_df2$label, levels=c("Targeting\ngRNA 5hr", "Targeting\ngRNA 18hr", "Nofloxacin\n0.5MIC", "Nofloxacin\n1MIC", "Nofloxacin\n2MIC", "Nofloxacin\n33MIC", "Nofloxacin\n133MIC"))
+subset_df2$colname  <- factor(subset_df2$colname, levels=c("Targeting5hr", "Targeting18hr", "Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
+subset_df2$rowname <- factor(subset_df2$rowname, levels=unique(subset_df2$rowname))
+
+CasRx_df <- subset_df2 %>% filter(group=="CasRx")
+Nor_df <- subset_df2 %>% filter(group=="Norfloxacin")
+
+trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy", limits=c(-5,5)) +
+  theme(axis.text.x = element_text(angle=45, hjust = 1, family=font)) +
+  #theme( plot.margin=unit(c(2,2,2,2), "lines")) +
+  #annotation_custom(x_ann1, xmin=1.5, xmax=1, ymin=6, ymax=6) +
+  #annotation_custom(x_ann2, xmin= 3.5, xmax=3.5, ymin=6, ymax=6)+
+  facet_wrap( ~group, scales="free_x" ) +
+  #scale_x_discrete(labels = c("Non-Targeting gRNA", "Non-Targeting gRNA", "Targeing gRNA", "Targeting gRNA", "Norfloxacin 0.5MIC", "Norfloxacin 1MIC", "Norfloxacin 2MIC", "Norfloxacin 33MIC", "Norfloxacin 133MIC")) +
+  coord_cartesian(clip = "off") +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill="Log2fold\nChange")
+
+print(trt_comp)  
+ggsave("../Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
+```
+
+```{r}
+n_topgenes <- 50
+abs_sum_df <- data.frame(sort(rowSums(abs(l2f_filtered_df[1:n_topgenes, ])), decreasing=FALSE))
+abs_sum_ind <- rownames(abs_sum_df)
+for (i in 1:length(abs_sum_ind)){
+  print(abs_sum_ind[length(abs_sum_ind)+1-i])  
+}
+
+```
+
+```{r, fig.height=8, fig.width=6}
+as_l2f_df <- l2f_df[rownames(abs_sum_df),]
+
+as_l2f_df <- as_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+as_l2f_df <- as_l2f_df %>% mutate(timepoint = case_when(
+  colname == "Targeting5hr" ~ "Timepoint: 5hr",
+  colname == "Targeting18hr" ~ "Timepoint: 18hr"
+))
+
+as_l2f_df$colname  <- factor(as_l2f_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
+as_l2f_df$timepoint <- factor(as_l2f_df$timepoint, levels=unique(as_l2f_df$timepoint))
+as_l2f_df
+as_l2f_df$rowname<-factor(as_l2f_df$rowname, levels=unique(as_l2f_df$rowname))
+
+asTop_hits <- ggplot(as_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap( ~timepoint, scales="free_x" ) +
+  scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(Log[2]~"(Fold", "Change)")))
+
+print(asTop_hits)
+ggsave("../Figures/asTophitsNC_vs_s4.png", asTop_hits, dpi=600)
+```
+
+```{r, fig.height=12, fig.width=6}
+scale = 0.7
+var <- apply(l2f_df, MARGIN=1, FUN= var)
+var_df = data.frame(Var=var)
+rownames(var_df) <- rownames(l2f_df)
+
+var_l2f_df <- l2f_df[order(var_df$Var, decreasing=FALSE), , drop=FALSE]
+var_l2f_df <- var_l2f_df[var_df<scale*median(var_df$Var),]
+var_l2f_df
+
+
+var_l2f_df <- var_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+var_l2f_df <- var_l2f_df %>% mutate(timepoint = case_when(
+  colname == "Targeting5hr" ~ "Timepoint: 5hr",
+  colname == "Targeting18hr" ~ "Timepoint: 18hr"
+))
+
+
+var_l2f_df$colname  <- factor(var_l2f_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
+var_l2f_df$timepoint <- factor(var_l2f_df$timepoint, levels=unique(var_l2f_df$timepoint))
+var_l2f_df
+var_l2f_df$rowname<-factor(var_l2f_df$rowname, levels=unique(var_l2f_df$rowname))
+
+columns <- c("NT vs. T\n5hr.", "NT vs. T\n18hr")
+
+fsize = 10
+
+top_hits <- ggplot(var_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap( ~timepoint, scales="free_x" ) +
+  scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(Log[2]~"(Fold", "Change)")))
+print(top_hits)
+ggsave("../Figures/varTophitsNC_vs_s4.png", top_hits, dpi=600)
+```
+
+```{r}
+# Fixed version of your var_l2f_df heatmap
+var <- apply(l2f_df, MARGIN=1, FUN= var)
+var_df = data.frame(Var=var)
+rownames(var_df) <- rownames(l2f_df)
+
+# Order by variance and keep original row order
+var_l2f_df <- l2f_df[order(var_df$Var, decreasing=FALSE), , drop=FALSE]
+var_l2f_df <- var_l2f_df[var_df<scale*median(var_df$Var),]
+
+# Convert to long format while preserving order
+var_l2f_df$gene <- factor(rownames(var_l2f_df), levels = rownames(var_l2f_df))
+var_l2f_long <- var_l2f_df %>% 
+  rownames_to_column("gene") %>%
+  gather(colname, value, -gene) %>%
+  mutate(
+    timepoint = case_when(
+      colname == "Targeting5hr" ~ "Timepoint: 5hr",
+      colname == "Targeting18hr" ~ "Timepoint: 18hr"
+    ),
+    gene = factor(gene, levels = rownames(var_l2f_df)),  # Preserve order
+    colname = factor(colname, levels=c("Targeting5hr", "Targeting18hr")),
+    timepoint = factor(timepoint, levels=unique(timepoint))
+  )
+
+# Now plot
+ggplot(var_l2f_long, aes(x=colname, y=gene, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap(~timepoint, scales="free_x") +
+  scale_x_discrete(labels = c("NT vs. T\n5hr.", "NT vs. T\n18hr")) +
+  xlab("Treatment") +
+  ylab("Gene") +
+  labs(fill=expression(atop(Log[2]~"(Fold", "Change)")))
+```
+
+```{r}
+n_topgenes = 4577
+n_topVarGenes = 75
+topVarGenes <- head(order(rowVars(assay(dds)), decreasing = TRUE), n_topgenes)
+
+topgenes5s4 <- rownames(head(res5s4[order(res5s4$log2FoldChange, decreasing = TRUE),], n_topgenes))
+topgenes18s4 <- rownames(head(res18s4[order(res18s4$log2FoldChange, decreasing = TRUE),], n_topgenes))
+
+
+
+sig_res5s4 <- rownames(subset(res5s4, padj < 0.01))
+sig_res18s4 <- rownames(subset(res18s4, padj < 0.01))
+
+p_5_s4 <- as.data.frame(res5s4$padj)
+rownames(p_5_s4) <- rownames(res5s4)
+p_5_s4 <- p_5_s4[topgenes5s4, , drop=FALSE]
+p_5_s4$rownames <- topgenes5s4
+#colnames("WT 5hr untreated vs. st 18hr treated")
+
+p_18_s4 <- as.data.frame(res18s4$padj)
+rownames(p_18_s4) <- rownames(res18s4)
+p_18_s4 <- p_18_s4[topgenes18s4, , drop=FALSE]
+p_18_s4$rownames <- topgenes18s4
+#colnames("WT 5hr untreated vs. st 18hr treated")
+
+l <- list(p_5_s4, p_18_s4)
+p_df <- Reduce(function(x, y) merge(x, y, by="rownames", all=T), l)
+rownames(p_df) <- p_df$rownames
+p_df <- p_df[,-1]
+p_raw_df <- data.frame(p_df)
+p_raw_df[is.na(p_raw_df)]<-0
+p_df <- na.omit(p_df)
+colnames(p_raw_df) <- c("Targeting5hr", "Targeting18hr")
+colnames(p_df) <- c("Targeting5hr", "Targeting18hr")
+p_df_tv <-p_df[topVarGenes, ] # Total Variance accross samples.
+p_df_5_s4 <- p_df[order(abs(p_df$Targeting5hr), decreasing = TRUE), , drop=FALSE]
+
+
+```
+
+
+```{r, fig.height=12, fig.width=6}
+scale = 0.7
+var <- apply(p_df, MARGIN=1, FUN= var)
+var_df = data.frame(Var=var)
+rownames(var_df) <- rownames(p_df)
+
+var_p_df <- p_df[order(var_df$Var, decreasing=FALSE), , drop=FALSE]
+var_p_df <- var_p_df[var_df<scale*median(var_df$Var),]
+var_p_df
+
+
+var_p_df <- var_p_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+var_p_df <- var_p_df %>% mutate(timepoint = case_when(
+  colname == "Targeting5hr" ~ "Timepoint: 5hr",
+  colname == "Targeting18hr" ~ "Timepoint: 18hr"
+))
+
+
+var_p_df$colname  <- factor(var_p_df$colname, levels=c("Targeting5hr", "Targeting18hr"))
+var_p_df$timepoint <- factor(var_p_df$timepoint, levels=unique(var_p_df$timepoint))
+var_p_df
+var_p_df$rowname<-factor(var_p_df$rowname, levels=unique(var_p_df$rowname))
+
+columns <- c("NT vs. T\n5hr.", "NT vs. T\n18hr")
+
+fsize = 10
+
+top_hits <- ggplot(var_p_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +
+  facet_wrap( ~timepoint, scales="free_x" ) +
+  scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(Log[2]~"(Fold", "Change)")))
+print(top_hits)
+ggsave("../Figures/varTophitsNC_vs_s4.png", top_hits, dpi=600)
+```
+
+```{R}
+function 
+```

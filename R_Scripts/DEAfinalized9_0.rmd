@@ -1595,20 +1595,45 @@ source("optimized_lda.R")
 # Initialize analyzer with validation
 analyzer <- OptimizedLDAAnalyzer$new(
   master_df = Master_df,
-  go_corpus_col = "GO_corpus"  # Column containing GO terms
+  go_corpus_col = "GO"  # Column containing GO terms
 )
 
 # Execute optimized pipeline
 results <- analyzer$
-  prepare_dtm(p_sparse = 0.94)$    # Remove 94% sparse terms
+  prepare_dtm(p_sparse = 0.999)$    # Remove 94% sparse terms
   find_optimal_k(k_range = 3:11)$  # Parallel tuning
   fit_lda()$                       # Uses auto-detected k
   visualize_topics()
 
+
 # Access results
-print(results$k_metrics)
-plot(results$visualize_topics())
+print(results$lda_model)
+print(results$visualize_topics())
 
 # Save diagnostic plots
-ggsave("optimal_k.png", FindTopicsNumber_plot(results$k_metrics))
+#ggsave("optimal_k.png", FindTopicsNumber_plot(results$k_metrics))
+```
+```{r}
+ validate_go_terms = function() {
+      all_go_ids <- unique(na.omit(unlist(
+        strsplit(Master_df[, "GO"], ",\\s*")
+      )))
+      
+      valid_go <- tryCatch({
+        AnnotationDbi::select(
+          org.EcK12.eg.db,
+          keys = all_go_ids,
+          columns = c("GO"),
+          keytype = "GO"
+        ) %>%
+          distinct(GO, .keep_all = TRUE)
+      }, error = function(e) {
+        warning("GO validation failed: ", e$message)
+        data.frame(GOID = all_go_ids, TERM = all_go_ids
+        )
+      })
+      return(valid_go)
+ }
+  
+validate_go_terms()
 ```

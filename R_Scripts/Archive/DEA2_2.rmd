@@ -1,0 +1,270 @@
+```{r}
+library("tximport")
+library("readr")
+library("DESeq2")
+library(data.table)
+```
+
+```{r}
+# First lets list all of the quant.sf files
+cwd <- getwd()
+quant_fp <- paste(cwd, 'quants/', sep = '/')
+
+quant_files <- list.files(path = quant_fp, pattern="quant.sf$", recursive = TRUE)
+```
+```{r}
+print(quant_files)
+```
+
+```{r}
+# And we can then extract the sample names.
+quant_dirs <- list.files(quant_fp, pattern = "_quant$", full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs))
+# correct for the FASTQ generation file included in the directory.
+sample_names <- sample_names[1: 48]
+```
+
+```{r}
+
+print(sample_names)
+```
+```{r}
+# And now we can create the txi import, note that it can take an array of file names.
+txi <- tximport(files = paste(quant_fp, quant_files, sep = '/'),
+                      type = "salmon",
+                      txOut = TRUE)
+```
+```{r}
+print(paste(quant_fp, quant_files, sep = '/'))
+```
+
+
+```{r}
+sampleTable <- data.frame(
+  
+)
+
+conditionNC1NCind1 <- ifelse(grepl("NC_1", sample_names), "NC", 
+                     ifelse(grepl("NC_1_ind", sample_names), "NC_ind_1", NA))
+sampleTableNC1NCind1 <- data.frame(sampleName = sample_names,
+                          condition = factor(conditionNC1NCind1))
+samples_to_keep <- sample_info$sample_names  # For example, based on `sample_info`
+
+# Create a filtered version of txi by subsetting each component
+txi_filtered <- list(
+  counts = txi$counts[, samples_to_keep],
+  abundance = txi$abundance[, samples_to_keep],
+  length = txi$length[, samples_to_keep]
+)
+print(conditionNC1NCind1)
+```
+
+```{r}
+filtered_sampleTableNC1NCind1 <- sampleTableNC1NCind1[!is.na(sampleTableNC1NCind1$conditionNC1NCind1), ]
+fileterd_txiNC1NCind1 <- txi$counts[, filtered_sampleTableNC1NCind1$sampleName]
+```
+
+```{r}
+ddsNC1NCind1 <- DESeqDataSetFromTximport(
+  txi = fileterd_txiNC1NCind1,
+  colData = filtered_sampleTableNC1NCind1,
+  design = ~ conditionNC1NCind1
+)
+```
+
+
+```{r}
+# Here we will create a temporary Dataframe for the TXI data so that we can add the sample names as columns.
+# Before feeding to DESeq2 we need to convert back to a numeric matrix.
+atts <- attributes(txi)
+data <- data.table(data = txi$counts) # Using DaRMDtaTables allows for better performance
+name_list <- attributes(txi)
+
+colnames(data) <- sample_names
+```
+
+```{r}
+# Extract the conditions from the file names supplied by Jen
+#temp <- sub(pattern ="ATEY090523-", "",sample_names)
+
+ # Set experimental conditons
+type <- "single-read" # Set Read conditions
+condition <- sub(pattern ="_L.*", "", sample_names)
+coldata <- data.frame(condition, type)
+rownames(coldata) <- sample_names
+```
+
+```{r}
+# According to the DESeq2 vignette the above code results in a conditions matrix for which the ordering is not the same as the samples.
+# It is important to resolve this issue
+# This does not seem to be true for our data but its good to make sure.
+# We also need to make sure that the coldata labels match the counts data.
+
+print(coldata)
+```
+
+```{r}
+all(rownames(coldata) %in% colnames(data)) # Ensure that all samples are present in both the data and coldata.
+```
+
+```{r}
+all(rownames(coldata)==colnames(data)) # Ensure they are in the right order
+```
+
+```{r}
+# first create the design formula
+
+# Now create the DESeq2 Dataset`
+
+dds = DESeqDataSetFromMatrix(round(data), colData = coldata, design = ~ condition)
+
+
+```
+
+```{r}
+dds <- DESeq(dds)
+```
+
+```{r}
+res <- results(dds)
+
+```
+
+```{r}
+plotMA(res, ylim=c(-10,10))
+```
+
+```{r}
+
+```
+
+```{r}
+resOrdered <- res[order(res$pvalue),]
+```
+
+```{r}
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Extract results
+res <- as.data.frame(results(dds))
+
+# Add a column for significance based on adjusted p-value
+# You can adjust the threshold according to your needs (e.g., 0.05)
+res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Create the volcano plot
+# Create the volcano plot without the title, with legend inside, and larger global font size
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+       geom_point(alpha = 0.6, size = 1.5) +
+        scale_color_manual(values = c("gray", "red")) +
+        theme_minimal(base_size = 14) +  # Set a base global font size (adjust as needed)
+        geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+        geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+        labs(title = NULL,  # Remove the title
+             x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Adjust text size for labels  # Adjust the y-axis range # Specify breaks for y-axis ticks
+        theme(
+          legend.position = c(0.89, 0.5),  # Move the legend inside the plot on the right side
+          legend.title = element_text(size = 14),  # Increase the font size of the legend title
+          legend.text = element_text(size = 12),  # Increase the font size of the legend text
+          plot.title = element_blank(),  # Ensure no title
+          text = element_text(size = 14),  # Global font size adjustment for the entire plot
+          legend.background = element_rect(color = "black", fill = NULL)  # Add a black border around the legend
+        )
+
+  
+#ggsave("volcanoplot.png", plot = vplot,width = 8, height = 4, dpi=300)
+```
+
+
+```{r}
+# Filter for significant genes with deseq2padj < 0.05 and log2 fold change > 1 (or any thresholds you prefer)
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Extract the rownames, which should correspond to the gene names
+significant_gene_names <- rownames(sig_genes)
+
+# Print the significant gene names
+print(significant_gene_names)
+
+# Optionally, write them to a CSV file
+write.csv(significant_gene_names, file = "significant_genes.csv")
+
+
+```
+
+
+```{r}
+# Assuming 'txi' is the tximport object and it has gene names in it.
+# Check if row names of the txi object are the gene names you expect:
+head(rownames(txi$counts))  # This should show gene names.
+
+# Create DESeq2 Dataset using the counts matrix with gene names as rownames.
+dds <- DESeqDataSetFromMatrix(round(txi$counts), colData = coldata, design = ~ condition)
+
+# Proceed with DESeq2 analysis
+dds <- DESeq(dds)
+```
+
+
+```{r}
+# Ensure rownames of res correspond to gene names (they should if txi contains gene names)
+head(rownames(res))  # This should show gene names.
+
+# Extract significant genes with gene names
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Get gene names of significant genes
+significant_gene_names <- rownames(sig_genes)
+
+# Print or save the gene names
+print(significant_gene_names)
+write.csv(significant_gene_names, file = "significant_genes.csv")
+```
+
+
+```{r}
+res <- results(dds)
+```
+
+
+```{r}
+# Load ggplot2 for plotting
+
+
+# Extract results
+res <- as.data.frame(results(dds))
+
+# Add a column for significance based on adjusted p-value and fold change
+res$significance <- ifelse(res$padj < 0.05 & abs(res$log2FoldChange) > 1, "Significant", "Not Significant")
+
+# Add a column for gene names (assuming rownames are gene names)
+res$gene <- rownames(res)
+
+# Filter the significant genes for labeling
+sig_genes <- subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Create the volcano plot with labels for significant genes
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +  # Points on the plot
+  scale_color_manual(values = c("gray", "red")) +  # Customize colors
+  theme_minimal() +  # Simple theme
+  geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +  # Fold change cutoffs
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +  # p-value cutoff
+  labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +  # Labels
+  geom_text(data = sig_genes, aes(label = gene), vjust = 1.5, size = 3)  # Add gene name labels to significant points
+
+```
+```{r}
+top_sig_genes <- head(sig_genes[order(sig_genes$padj), ], 10)
+
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("gray", "red")) +
+  theme_minimal() +
+  geom_vline(xintercept = c(-1, 1), col = "blue", linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+  labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 Adjusted P-Value") +
+  geom_text(data = top_sig_genes, aes(label = gene), vjust = 1.5, size = 2)
+
+```

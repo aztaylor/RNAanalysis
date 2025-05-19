@@ -1,0 +1,1907 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2")
+library("tximportData")
+library("ggplot2")
+library("tximeta")
+library("magrittr")
+library("dplyr")
+library("tidyverse")
+library("ggpubr")
+library("pheatmap")
+library("grid")
+library("ggplotify")
+library("gridExtra")
+library("vsn")
+library("RColorBrewer")
+library("PoiClaClu")
+library("glmpca")
+library("ggbeeswarm")
+library("apeglm")
+library("genefilter")
+library("AnnotationHub")
+library("tm") # Text mining
+library("tidytext")
+library("text2vec")
+library("lsa")
+library("topicmodels")
+library("AnnotationDbi")
+library("gridExtra")
+library(tidygraph)
+library(ggraph)
+library(ggforce)
+library(tidyr)
+library(httr)
+library(jsonlite)
+library(pRoloc)
+library(stringr)
+library(viridis)
+
+select <- function(...){ dplyr::select(...)}
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+par_dir <- dirname(cwd)
+quant_fp <- paste(par_dir, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+
+```{r}
+quant_fp
+```
+
+```{r}
+# Create the txi import
+txi <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+```
+
+```{r}
+colnames(txi$abundance) <- sample_names
+colnames(txi$counts) <- sample_names
+colnames(txi$length) <- sample_names
+```
+
+```{r}
+splitstrs <- strsplit(sample_names, "\\_|\\-")
+string = splitstrs[[1]]
+#length(splitstrs)
+#splitstrs
+```
+
+```{r}
+genotype <- c()
+treatment <- c()
+timepoint <- c()
+replicate <- c()
+for (i in 1:length(sample_names)){
+  strippedConds = strsplit(sample_names, "\\_|\\-")
+  genotype <- append(genotype, strippedConds[[i]][2])
+  if (length(strippedConds[[i]]) == 4){
+    treatment <- append(treatment, "Nind")
+    if (strippedConds[[i]][3] == 1){
+      timepoint <- append(timepoint, 5)
+    } else if (strippedConds[[i]][3] == 3){
+      timepoint <- append(timepoint, 18)
+    }
+    replicate <- append(replicate, strippedConds[[i]][4])
+  }
+  else if (length(strippedConds[[i]]) == 5){
+    treatment = append(treatment, "ind")
+    if (strippedConds[[i]][4] == 1){
+      timepoint <- append(timepoint, 5)
+    } else if (strippedConds[[i]][4] == 3){
+      timepoint <- append(timepoint, 18)
+    }
+    replicate <- append(replicate, strippedConds[[i]][5])
+  }
+  
+}
+```
+
+```{r}
+samples <- sub("_L00",".",sample_names)
+si_complete <-data.frame(samples=samples,
+                         genotype=genotype,
+                         treatment=treatment,
+                         timepoint=timepoint,
+                         replicate=replicate)
+```
+```{r}
+si_complete
+```
+```{r}
+coldata <- si_complete
+coldata
+coldata$names <- sub("_L00[0-9]+","",sample_names)
+coldata$files <- paste(quant_fp, quant_files, sep="/")
+coldata
+```
+```{r}
+coldata <- subset(coldata, select = -replicate)
+coldata
+```
+
+```{r}
+se <- tximeta(coldata) #SummarizedExperiment Object
+```
+```{r}
+if (!is.factor(se$treatment)){
+  se$treatment <- factor(se$treatment)
+}
+if (!is.factor(se$timepoint)){
+  se$timepoint <- factor(se$timepoint)
+}
+if (!is.factor(se$genotype)){
+  se$genotype <- factor(se$genotype)
+}
+se$treatment %<>% relevel("Nind") # Nind is the base line to compare to. 
+se$timepoint %<>% relevel("5")
+se$genotype %<>% relevel("WT")
+```
+
+```{r}
+design =~ genotype*timepoint*treatment #~ genotype + timepoint + treatment + genotype:timepoint + genotype:treatment + genotype:timepoint:treatment
+
+dds <- DESeqDataSet(se, design = design)
+#dds <- collapseReplicates(dds, dds$samples, dds$replicate)
+meanSdPlot(assay(dds), ranks = FALSE)
+
+log.cts.one <- log2(assay(dds) + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+# Run Prefiltering because DESeqDataSet contains several rows that contain zeros or small amounts. Prefiltering will remove these and allow for increased speed when running functions.
+```{r}
+nrow(dds)
+smallestGroupSize <- 4
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+nrow(dds)
+```
+# Lets look at the simulated data of what the counts should look like if they follow a poisson distribution.
+```{r}
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+meanSdPlot(cts, ranks = FALSE)
+
+log.cts.one <- log2(cts + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+# Now we will compare the variance stabilizing transformation (VST), regularized-logarithm transformation (rlog), and log2 transformation.
+```{r}
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+#head(assay(vsd), 3)
+```
+```{r}
+rld <- rlog(dds, blind = FALSE)
+#head(assay(rld), 3)
+```
+```{r}
+dds <- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, c(7,11)]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, c(7,11)]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, c(7,11)]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+lvls <- c("log2(x + 1)", "vst", "rlog")
+df$transformation <- factor(df$transformation, levels=lvls)
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+# Now we can look at the euclidean distance between the sample to check for similarity between them.
+```{r}
+sampleDists <- dist(t(assay(dds)))
+```
+# And Create a heatmap to visualize.
+```{r}
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( dds$treatment, dds$genotype, dds$timepoint, sep = "-" )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+# Do the same using a poisson distance.
+```{r}
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$treatment, dds$genotype, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+# Finally with a PCA.
+```{r}
+plotPCA(vsd, intgroup = c("treatment", "genotype", "timepoint"))
+```
+```{r}
+pcaData <- plotPCA(vsd, intgroup = c( "treatment", "genotype", "timepoint"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = treatment, shape = genotype)) +
+  geom_point(size =3, mapping = aes(alpha = timepoint)) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")
+```
+# Finally, finally with a generalized PCA (GLM-PCA)
+```{r}
+gpca <- glmpca(counts(dds), L=2)
+gpca.dat <- gpca$factors
+gpca.dat$treatment <- dds$treatment
+gpca.dat$genotype <- dds$genotype
+gpca.dat$timepoint <- dds$timepoint
+
+ggplot(gpca.dat, aes(x = dim1, y = dim2, color = treatment, shape = genotype)) + geom_point(size =3, mapping = aes(aplha = timepoint)) + coord_fixed() + ggtitle("glmpca - Generalized PCA")
+```
+# multidimensional scaling plot.
+```{r}
+mds <- as.data.frame(colData(vsd))  %>%
+         cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = treatment, shape = genotype, alpha = timepoint)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
+```
+```{r}
+dds <- DESeq(dds)
+res <- results(dds, name = "genotype_s4_vs_WT")
+topGene <- rownames(res)[which.max(res$log2FoldChange)]
+plotCounts(dds, gene = topGene, intgroup=c("treatment", "genotype", "timepoint"))
+```
+
+```{r}
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("treatment","genotype", "timepoint"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, shape = treatment)) +
+  scale_y_log10() +  geom_beeswarm(cex = 3)
+```
+
+```{r}
+ggplot(geneCounts, aes(x = timepoint, y = count, color = genotype, group = interaction(genotype, treatment), shape = treatment)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line()
+```
+
+
+```{r, fig.height=20, fig.width=10}}
+font = "Helvetica"
+timep = "5"
+ntopgenes = 100
+pthreshold = 0.1
+design =~ genotype + treatment + timepoint + genotype:treatment + genotype:timepoint + treatment:timepoint + genotype:treatment:timepoint
+#design =~ genotype + timepoint + treatment
+
+dds <- DESeqDataSet(se, design = design)
+dds <- DESeq(dds)
+resultsNames(dds)
+
+# Assuming 'rld' is your rlog-transformed data (or use vst()), filter 
+# for the top 50.
+gene_variance <- apply(assay(rld), 1, var)  # Variance per gene
+
+# Sort genes by variance (descending) and take top 50
+top_genes <- names(sort(gene_variance, decreasing = TRUE)[1:50])
+# Now create the dataframe for the heatmap
+
+# Example: Extract and combine results for all 12 groups
+heatmap_data <- bind_rows(
+  ###########################################################
+  # Baseline effect with induction
+  ###########################################################
+  
+  # Baseline (WT -treatment 5hr)
+  results(dds, name = "Intercept") %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "WT", treatment = "ind", timepoint = timep, Comparison = "Baseline"
+           ),
+  
+  ##########################################################################
+  # Plasmid (non-functional) effect with and without induction and leakyniss
+  ##########################################################################
+
+  # NC -treatment 5hr (non-functional effector leakiness)
+  results(dds, list(
+  c("genotype_NC_vs_WT", "treatment_ind_vs_Nind",
+    "genotypeNC.treatmentind", "timepoint_18_vs_5",
+    "genotypeNC.timepoint18", "treatmentind.timepoint18",
+    "genotypeNC.treatmentind.timepoint18")
+    )) %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "NC", treatment = "ind", timepoint = timep, Comparison = "NC_IPTG_WT"
+           ),
+  
+  ###########################################################
+  # Functional effector with and without induction
+  ###########################################################
+    # s4 +treatment 18
+  results(dds, contrast = list(
+    c("genotype_s4_vs_WT", "treatment_ind_vs_Nind", "genotypes4.treatmentind", "timepoint_18_vs_5",
+      "genotypes4.timepoint18", "treatmentind.timepoint18",
+      "genotypes4.treatmentind.timepoint18"))) %>% 
+    as.data.frame() %>% 
+    rownames_to_column("Gene") %>%
+    mutate(genotype = "s4", treatment = "ind", timepoint = timep, Comparison = "s4_IPTG_T2"
+           ),
+    
+) %>%
+  select(Gene, genotype, treatment, timepoint, log2FoldChange, padj) %>%
+  mutate(
+    sig_star = case_when(
+      padj < 0.001 ~ "***",
+      padj < 0.01 ~ "**",
+      padj < 0.1 ~ "*",
+      TRUE ~ ""
+    ),
+    # Force factor levels for plotting
+    genotype = factor(genotype, levels = c("WT", "NC", "s4")),
+    treatment = factor(treatment, levels = c("Nind", "ind")),
+    timepoint = factor(timepoint, levels = c("5", "18"))
+  )
+
+heatmap_data <- heatmap_data %>%
+  dplyr::filter(
+    !if_any(c(log2FoldChange, padj), is.na),  # Keep rows where these cols are non-NA
+    padj < pthreshold  # Keep rows where these cols are non-zero
+    )
+
+# Set symmetric color limits based on max absolute LFC
+lfc_limit <- max(abs(heatmap_data$log2FoldChange), na.rm = TRUE) * 1.1
+# Calculate optimal dimensions based on your data
+n_genes <- length(unique(heatmap_data$Gene))
+n_conditions <- length(unique(heatmap_data$GenoType))
+
+# Set your target dimensions (in inches)
+fig_width <- 10 # Your specified width
+fig_height <- 50 # Your specified height
+
+# Calculate optimal tile aspect ratio
+tile_aspect_ratio <- (fig_height/fig_width)*(n_conditions/n_genes)
+
+induction_order <- heatmap_data %>%
+  # Filter to only the groups we want to compare
+  filter(genotype %in% c("s4", "NC"), treatment == "ind", timepoint == timep) %>%
+  # For each gene, calculate the difference between s4 and NC
+  group_by(Gene) %>%
+  summarize(
+    induction_effect = log2FoldChange[genotype == "s4"] - log2FoldChange[genotype == "NC"]
+  ) %>%
+  # Sort by absolute induction effect
+  arrange(desc(abs(induction_effect))) %>%
+  pull(Gene)
+
+
+rRNAgenes <- c("rrl*", "rrs*")
+divergence_data <- heatmap_data %>%
+  filter(
+    (genotype == "WT" & treatment == "Nind" & timepoint == timep) |
+    (genotype == "NC" & treatment == "ind" & timepoint == timep) |
+    (genotype == "s4" & treatment == "ind" & timepoint == timep) | 
+    (!grepl(paste(rRNAgenes, collapse="|"), Gene, ignore.case = TRUE))
+  ) %>%
+  # Spread to wide format
+  pivot_wider(
+    id_cols = Gene,
+    names_from = genotype,
+    values_from = log2FoldChange,
+  ) %>%
+  # Calculate divergence metrics
+  mutate(
+    s4_vs_WT = `s4` - `WT`,  # Absolute difference from WT baseline
+    s4_vs_NC = `NC` - `WT`,  # Absolute difference from NC control
+    combined_divergence = abs(s4_vs_WT - s4_vs_NC)  # Total divergence score
+  ) %>%
+  arrange(desc(combined_divergence)) # Sort by highest divergence
+
+# Result contains:
+# Gene | WT | NC | s4 | s4_vs_WT | s4_vs_NC | combined_divergence
+
+# Sort data base of the divergence data order.
+top_n_genes <- divergence_data %>%
+  slice_head(n = ntopgenes) %>%  # Get first 20 rows (already sorted by descending divergence)
+  pull(Gene)  # Extract as character vector
+
+# Alternative with explicit sorting:
+top_n_genes <- divergence_data %>%
+  arrange(desc(combined_divergence)) %>%  # Ensure descending order
+  head(ntopgenes) %>%
+  pull(Gene)
+
+gene_order <- top_n_genes
+
+heatmap_data_sorted <- heatmap_data %>%
+  filter(Gene %in% gene_order) %>%
+  mutate(Gene = factor(Gene, levels = gene_order, exclude=NULL)) %>%
+  arrange(Gene, .by_group = TRUE) 
+
+# 1. Calculate WT baseline values (per gene)
+wt_baseline <- heatmap_data_sorted %>%
+  filter(genotype == "WT",
+        Gene %in% gene_order) %>%
+  dplyr::select(Gene, treatment, timepoint, wt_l2fc = log2FoldChange)
+
+# 2. Create relative fold changes (s4-WT and NC-WT)
+heatmap_relative <- heatmap_data_sorted %>%
+  filter(genotype %in% c("NC", "s4")) %>%  # Exclude WT
+  inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
+  mutate(
+    relative_l2fc = log2FoldChange - wt_l2fc,  # Calculate difference from WT
+    genotype = paste0(genotype, "-WT"),  # Update genotype labels
+    Gene = factor(Gene, levels = gene_order, exclude=NULL)  # Ensure consistent ordering)
+  ) %>%
+  select(-log2FoldChange, -wt_l2fc) %>%# Remove original columns
+  dplyr::rename(`log2FoldChange` = `relative_l2fc`)  # Rename for consistency
+
+# 3. (Optional) Combine with other annotations
+heatmap_relative <- heatmap_relative %>%
+  left_join(
+    heatmap_data %>% select(Gene, genotype, sig_star),  # Keep significance stars
+    by = c("Gene", "genotype")
+  )
+  
+ggplot(heatmap_data_sorted, aes(
+    x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE), 
+    y = fct_rev(Gene))
+) +
+  scale_y_discrete(limits = levels(rev(gene_order))) +
+  geom_tile(aes(fill = log2FoldChange)) +
+  #facet_grid(~ timepoint, scales = "free_x") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    #limits = c(-3, 3)  # Adjust based on your data
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 8),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Strain + IPTG",
+    y = "Gene",
+    fill = expression(atop(log[2],"Fold Change")) 
+  )
+```
+# Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
+```{r, fig.width=5, fig.height=10}
+ggplot(heatmap_relative, aes(
+    x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE), 
+    y = fct_rev(Gene))
+) +
+  scale_y_discrete(limits = rev(top_n_genes)) +
+  geom_tile(aes(fill = log2FoldChange)) +
+  #facet_grid(~ timepoint, scales = "free_x") +
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1, size = 8),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Strain + IPTG",
+    y = "Gene",
+    fill = expression(atop(log[2],"Fold Change")) 
+                            
+  )
+
+ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/Heatmap_5hr.png",
+      p, 
+      width = 5,
+      height = 10,
+      dpi = 300,)
+```
+
+
+```{r}
+genes <- c(
+  # SOS responsive, LexA-dependent genes
+  "polB", "recA", "recN", "sbmC", "ssb", "sulA", "uvrA", "uvrB",
+  
+  # LexA-independent genes
+  "dnaA", "nrdA", "nrdB", "cydA", "tdcB", "tdcC", "cstA", "sspA", "sspB",
+  "deoA", "deoB", "deoC", "dnaG", "gmk", "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG",
+  
+  # Anaerobic induction
+  "cydA", "tdcB", "tdcC",
+  
+  # Starvation induction
+  "cstA", "sspA", "sspB",
+  
+  # Other regulation
+  "deoA", "deoB", "deoC", "dnaG", "gmk", "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG",
+  
+  # Transcription-related genes
+  "fliA", "fliZ", "greA", "rho", "rpoA", "rpoD",
+  
+  # Translation-related genes
+  "fusA", "infA", "rnpA", "rpmB", "rpmG", "rpmH", "rpsG", "rpsU", "trmD",
+  
+  # Hypothetical or unknown function genes
+  "yabO", "yagP", "ychB", "ydiY", "yebE", "yebF", "yeeN", "yfgB", "yfhN",
+  "yfhO", "yghB", "yhjG", "yi52–10", "yibB", "yjeS", "ylaC", "yleA"
+)
+
+# Create a data frame for norfloxacin expression values from Table 1
+nor_df <- data.frame(
+  Gene = c("polB", "recA", "recN", "sbmC", "ssb", "sulA", "uvrA", "uvrB", "dnaA", "nrdA", "nrdB",
+           "fliA", "fliZ", "greA", "rho", "rpoA", "rpoD", "deoA", "deoB", "deoC", "dnaG", "gmk",
+           "gyrA", "gyrB", "intZ", "mcrB", "oraA", "pyrG", "yabO", "yagP", "ychB", "ydiY", "yebE",
+           "yfgB", "yfhN", "yfhO", "yghB", "yhjG", "yi52–10", "yibB", "yjeS", "ylaC", "yleA"),
+  
+  Nor_0.5_MIC = c(0.93, 3.79, 2.36, 1.14, 0.85, 1.36, 1.49, 1.25, 0.95, 1.48, 1.27, 1.18, 0.69, 
+                  0.99, 1.04, 0.86, 0.99, 1.12, 1.21, 1.19, 0.98, 1.03, 0.97, 0.76, 0.84, 1.02, 
+                  0.98, 1.04, 0.93, 0.97, 0.86, 0.86, 1.09, 0.97, 0.93, 0.83, 0.98, 0.87, 1.02, 
+                  1.00, 0.96, 0.85, 0.94),
+  
+  Nor_1_MIC = c(1.22, 6.37, 3.65, 2.78, 1.06, 2.84, 2.12, 1.23, 1.25, 1.30, 1.08, 0.88, 0.71, 
+                0.97, 1.02, 0.80, 2.05, 1.28, 1.29, 1.15, 1.11, 1.06, 0.88, 1.00, 0.85, 0.92, 
+                0.92, 0.94, 0.93, 0.86, 0.97, 0.88, 0.97, 0.89, 0.89, 0.75, 0.91, 0.69, 0.86, 
+                0.94, 0.81, 0.92, 0.81),
+  
+  Nor_2_MIC = c(1.31, 11.10, 4.82, 5.59, 1.00, 4.50, 1.97, 1.39, 1.16, 1.65, 1.48, 0.98, 0.39, 
+                1.93, 0.67, 0.75, 4.64, 1.32, 3.25, 1.42, 1.69, 2.35, 0.84, 0.97, 0.81, 1.03, 
+                1.21, 1.03, 1.07, 1.03, 1.62, 0.92, 1.01, 1.62, 1.27, 1.74, 1.08, 0.94, 1.03, 
+                1.53, 1.21, 2.39, 1.43),
+  
+  Nor_33_MIC = c(4.84, 47.61, 16.14, 0.93, 2.94, 6.44, 21.63, 3.40, 3.65, 8.92, 3.96, 2.81, 
+                 2.72, 4.35, 3.23, 0.35, 7.85, 2.25, 4.09, 5.24, 4.69, 2.69, 7.07, 5.09, 2.64, 
+                 4.54, 5.11, 7.41, 3.71, 2.83, 5.21, 3.46, 1.52, 2.09, 3.18, 4.44, 4.08, 2.90, 
+                 2.35, 3.18, 2.78, 3.18, 3.56),
+  
+  Nor_133_MIC = c(4.27, 47.55, 11.69, 0.83, 3.75, 4.98, 46.35, 4.71, 3.68, 5.17, 2.07, 4.44, 
+                  5.25, 3.86, 4.09, 0.22, 9.45, 1.75, 6.07, 6.83, 5.73, 3.95, 8.85, 6.02, 3.64, 
+                  5.05, 5.35, 9.76, 3.61, 3.56, 3.63, 2.44, 1.66, 3.01, 3.26, 5.28, 6.82, 4.93, 
+                  3.43, 4.68, 3.98, 6.25, 6.25)
+)
+
+# View the data frame
+rownames(nor_df)<-nor_df$Gene
+nor_df <- log(nor_df[,-1], 2)
+```
+
+```{r}
+heatmap_data_comp <- heatmap_data %>%
+  filter(genotype == "s4", treatment == "ind", timepoint == timep) %>%
+  select(Gene, log2FoldChange) %>%
+  remove_rownames() %>%
+  column_to_rownames(var="Gene")
+
+gene_overlap <- rownames(nor_df) %in% rownames(heatmap_data_comp)
+subset_heatmap <- heatmap_data_comp[rownames(heatmap_data_comp) %in% rownames(nor_df), , drop=FALSE]
+subset_nor_df <- nor_df[rownames(nor_df) %in% rownames(heatmap_data_comp), , drop=FALSE]
+
+subset_df <- Reduce(function(x,y) merge(x,y, by='row.names', all=T), list(subset_heatmap, subset_nor_df))
+rownames(subset_df)<-subset_df$Row.names
+subset_df <- subset_df[, -1]
+```
+
+```{r}
+var_nor <- apply(nor_df, MARGIN=1, FUN= var)
+var_nor_df = data.frame(Var=var_nor)
+rownames(var_nor_df) <- rownames(nor_df)
+
+varNor_l2f_df <- nor_df[order(var_nor_df$Var, decreasing=FALSE), , drop=FALSE]
+varNor_l2f_df
+
+varNor_l2f_df <- varNor_l2f_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+varNor_l2f_df <- varNor_l2f_df %>% mutate(colname = case_when(
+  colname == "Nor_0.5_MIC" ~ "0.5\nMIC",
+  colname == "Nor_1_MIC" ~ "1\nMIC",
+  colname == "Nor_2_MIC" ~ "2\nMIC",
+  colname == "Nor_33_MIC" ~ "33\nMIC",
+  colname == "Nor_133_MIC" ~ "133\nMIC"
+))
+
+columns <- c("Norfloxacin\n0.5MIC", "Norfloxacin\n1MIC", "Norfloxacin\n2MIC", "Norfloxacin\n33MIC", "Norfloxacin\n133MIC")
+varNor_l2f_df$colname <- factor(varNor_l2f_df$colname, levels=unique(varNor_l2f_df$colname))
+varNor_l2f_df
+varNor_l2f_df$rowname<-factor(varNor_l2f_df$rowname, levels=unique(varNor_l2f_df$rowname))
+
+fsize = 7
+
+nor_top_hits <- ggplot(varNor_l2f_df, aes(x=colname, y=rowname, fill=value)) + 
+  geom_tile() +
+  #scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(angle=45, family=font, size=fsize)) +
+  theme(axis.text.y = element_text(family=font, size=fsize)) +
+  coord_cartesian(clip = "off") +  
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  #scale_x_discrete(labels = columns) +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(log[2],"Fold Change")) )
+print(nor_top_hits)
+ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures//NorTopHits.png", nor_top_hits, dpi=600)
+```
+
+```{r}
+x_ann1 <- textGrob("timepointpoint: 5hr.", gp=gpar(fontsize=10))
+x_ann2 <- textGrob("timepointpoint: 18hr.", gp=gpar(fontsize=10))
+
+subset_sum_df<- data.frame(sort(rowSums(abs(subset_df)), decreasing=FALSE))
+subset_df <- subset_df[rownames(subset_sum_df),]
+
+subset_df2 <- subset_df %>% rownames_to_column() %>% gather(colname, value, -rowname)
+
+subset_df2 <- subset_df2 %>% mutate(group = case_when(
+  grepl("log2FoldChange", colname)~"dCasRx",
+  grepl("Nor", colname)~"Norfloxacin"
+))
+subset_df2 <- subset_df2 %>% mutate(label = case_when(
+  colname == "log2FoldChange" ~ "dCasRx\n5hr",
+  colname == "Nor_0.5_MIC" ~ "Nofloxacin\n0.5MIC",
+  colname == "Nor_1_MIC" ~ "Nofloxacin\n1MIC",
+  colname == "Nor_2_MIC" ~ "Nofloxacin\n2MIC",
+  colname == "Nor_33_MIC" ~ "Nofloxacin\n33MIC",
+  colname == "Nor_133_MIC" ~ "Nofloxacin\n133MIC"
+))
+
+subset_df2$label <- factor(subset_df2$label, levels=c("dCasRx\n5hr", "Nofloxacin\n0.5MIC", "Nofloxacin\n1MIC", "Nofloxacin\n2MIC", "Nofloxacin\n33MIC", "Nofloxacin\n133MIC"))
+subset_df2$colname  <- factor(subset_df2$colname, levels=c("Targeting5hr", "Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
+subset_df2$rowname <- factor(subset_df2$rowname, levels=unique(subset_df2$rowname))
+
+CasRx_df <- subset_df2 %>% filter(group=="CasRx")
+Nor_df <- subset_df2 %>% filter(group=="Norfloxacin")
+
+trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  theme(axis.text.x = element_text(angle=45, hjust = 1, family=font)) +
+  #theme( plot.margin=unit(c(2,2,2,2), "lines")) +
+  #annotation_custom(x_ann1, xmin=1.5, xmax=1, ymin=6, ymax=6) +
+  #annotation_custom(x_ann2, xmin= 3.5, xmax=3.5, ymin=6, ymax=6)+
+  #facet_wrap( ~group, scales="free_x" ) +
+  #scale_x_discrete(labels = c("Non-Targeting gRNA", "Non-Targeting gRNA", "Targeing gRNA", "Targeting gRNA", "Norfloxacin 0.5MIC", "Norfloxacin 1MIC", "Norfloxacin 2MIC", "Norfloxacin 33MIC", "Norfloxacin 133MIC")) +
+  coord_cartesian(clip = "off") +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(log[2],"Fold Change"))
+)
+print(trt_comp)  
+ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
+```
+# Pull the gene functions from Uniprot.
+```{r}
+get_go_terms <- function(entry) {
+  if (!is.null(entry$dbReferences) && 
+      "type" %in% names(entry$dbReferences)) {
+    go_terms <- entry$dbReferences[entry$dbReferences$type == "GO", ]
+    if (nrow(go_terms) > 0) {
+      return(go_terms[, c("id", "properties.term")])
+    }
+  }
+  return(data.frame(id=character(), term=character())) # Empty df if no GO terms
+}
+
+library(UniProt.ws)
+up <- UniProt.ws(taxId = 83333)  # Automatically loads latest UniProt data
+
+# Fetch GO terms for TP53, BRCA1, EGFR
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+library(org.EcK12.eg.db)
+
+# 1. Get ALL UniProt IDs for your genes (including Trembl)
+genes <- as.character(heatmap_data_sorted$Gene)
+all_genes <- data.frame(Gene = heatmap_data_sorted$Gene) %>%
+  mutate(ENTREZID = mapIds(
+    org.EcK12.eg.db,
+    keys = genes,
+    keytype = "SYMBOL",
+    column = "ENTREZID",
+    multiVals = "first"
+  ))
+
+go_df <- AnnotationDbi::select(up, 
+                          keys = all_genes$ENTREZID, 
+                          columns = c("go"), 
+                          keytype = "GeneID"
+                          )
+
+function_df <- all_genes %>%
+  inner_join(go_df, by = c("ENTREZID" = "From")) %>%
+  dplyr::rename(UniProtID = `Entry`, Functions = colnames(.)[[4]]) %>%
+  # Split into individual term-GO pairs
+  mutate(pairs = str_split(Functions, ";\\s*")) %>%
+  unnest(pairs) %>%
+  filter(pairs != "") %>%
+  # Extract clean components
+  mutate(
+    function_term = str_replace_all(pairs, "\\s*\\[[^]]+\\]", "") %>% str_trim(),
+    go_id = str_extract(pairs, "GO:\\d+")
+  ) %>%
+  # Group by gene and combine terms
+  group_by(Gene, UniProtID, ENTREZID) %>%
+  summarize(
+    Functions = paste(unique(function_term[function_term != ""]), collapse = ", "),
+    GO = paste(unique(go_id[!is.na(go_id)]), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  # Remove any rows with empty GO terms
+  filter(GO != "")
+write.csv(heatmap_data_sorted, file = "../Data/heatmap_data.csv", row.names = TRUE)
+write.csv(function_df, file = "../Data/Function_Descriptions.csv", row.names = TRUE)
+# Now let's analyze the functions and cluster using natural language process approaches.
+```
+# Create corpus based of function.
+```{r}
+function_df <- read.csv("../Data/Function_Descriptions.csv", row.names = 1)
+# Check the exact gene name in UniProt first
+function_descriptions <- function_df$Functions
+
+corpus <- Corpus(VectorSource(function_descriptions)) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, paste0("\\b", stopwords("en"), "\\b"))
+  #tm_map(stemDocument)
+
+function_df$Functions <- sapply(corpus, as.character)
+#function_df <- na.omit(function_df)
+#function_df <- subset(function_df, select = - function_term)
+Master_df <- inner_join(function_df, heatmap_data, by = "Gene")
+```
+# Vectorize the corpus using A Bag-of-Words with TF-IDF weighting and Word Embeddings via Glove or Word2Vec.
+```{r}
+# A Bag-of-Words with TF-IDF weighting.
+k<-3
+
+BoW_dtm <- function_df %>%
+  unnest_tokens(word, Functions) %>%
+  dplyr::count(Gene, word) %>%
+  cast_dtm(Gene, word, n) 
+
+library(tm)
+library(topicmodels)
+
+# 1. Start with your original BoW_dtm (57x794)
+#    Ensure it's a valid DocumentTermMatrix
+stopifnot(inherits(BoW_dtm, "DocumentTermMatrix"))
+
+# 2. Remove sparse terms FIRST (less aggressive threshold)
+BoW_lda_dtm <- removeSparseTerms(BoW_dtm, sparse = 0.999)  # Start with 0.95, adjust as needed
+cat("After term removal:", dim(BoW_lda_dtm), "\n")  # Should show [57 x reduced_terms]
+
+# 3. Then remove empty documents
+BoW_rowTotals <- rowSums(as.matrix(BoW_lda_dtm))
+BoW_lda_dtm <- BoW_lda_dtm[BoW_rowTotals > 0, ]
+cat("After doc removal:", dim(BoW_lda_dtm), "\n")  # e.g., [55 x 120]
+
+# 4. Run LDA only if documents remain
+if(nrow(BoW_lda_dtm) > 0) {
+  BoW_lda_model <- LDA(BoW_lda_dtm, k = k, control = list(seed = 123))
+} else {
+  stop("All documents were filtered out! Adjust sparse term threshold.")
+}
+
+it <- itoken(function_df$Functions, 
+             ids = function_df$Gene,
+             tokenizer = word_tokenizer,
+             progressbar = TRUE)
+vocab <- create_vocabulary(it)
+vectorizer <- vocab_vectorizer(vocab)
+t2v_dtm <- create_dtm(it, vectorizer)
+
+rownames(BoW_dtm) <- function_df$Gene[1:nrow(BoW_dtm)]
+
+# 4. Verify
+print(class(t2v_dtm))  # Should show "dgCMatrix" "dsparseMatrix" "generalMatrix"
+print(dim(t2v_dtm))    # Should show [documents x terms]
+
+rownames(t2v_dtm) <- function_df$Gene[1:nrow(t2v_dtm)]
+colnames(t2v_dtm) <- vocab$term
+
+# 1. Verify input data
+cat("\n=== Input Data ===\n")
+print(head(function_df$function_term))
+print(length(function_df$function_term))
+
+# 2. Check iterator
+it <- itoken(function_df$Functions)
+cat("\n=== Iterator ===\n")
+print(class(it))
+
+# 3. Check vocabulary
+vocab <- create_vocabulary(it)
+cat("\n=== Vocabulary ===\n")
+print(dim(vocab))
+
+# 4. Create and inspect DTM
+t2v_dtm <- create_dtm(it, vocab_vectorizer(vocab))
+cat("\n=== Final DTM ===\n")
+print(class(t2v_dtm))
+print(dim(t2v_dtm))
+print(object.size(t2v_dtm))
+
+t2v_dtm <- t2v_dtm[rowSums(t2v_dtm) > 0, ] # Remove empty rows
+```
+
+```{r}
+empty_rows <- which(rowSums(as.matrix(BoW_dtm)) == 0)
+function_df[empty_rows, c("Gene", "ENTREZID")]
+```
+
+# Try different clustering methods.
+```{r}
+# k-means clustering
+BoW_kmeans_res <- kmeans(as.matrix(BoW_dtm), centers = k)
+#t2v_kmeans_res <- kmeans(as.matrix(t2v_dtm), centers = k)
+function_df$BoW_k_means_cluster <- as.factor(BoW_kmeans_res$cluster)
+#function_df$t2v_k_means_cluster <- as.factor(t2v_kmeans_res$cluster)
+
+# Hierarchical clustering
+# Use the cosine similarity which is ideal for text data.
+BoW_cosine_matrix <- as.matrix(BoW_dtm)
+BoW_cosine_sim <- lsa::cosine(t(BoW_cosine_matrix))
+BoW_cosine_dist <- as.dist(1 - BoW_cosine_sim)
+BoW_hclust <- hclust(BoW_cosine_dist, method = "ward.D2")
+
+
+t2v_lda_dtm <- DocumentTermMatrix(t2v_dtm, control = list(weighting = weightTf))
+t2v_lda_dtm <- removeSparseTerms(t2v_lda_dtm, 0.9999)
+t2v_rowTotals <- apply(t2v_lda_dtm, 1, sum)
+t2v_lda_dtm <- t2v_lda_dtm[t2v_rowTotals > 0, ]
+t2v_lda_model <- LDA(t2v_lda_dtm, k = k, control = list(seed = 123))
+
+# Note that the above commented out code does not work because of the way text2vec stores it's dtm. 
+# compared to the tm library, t2v creates a raw term-count matrix, lacking explicit storage of wieghting attributes,
+# using simple counts that are equivelent to tm:weightTf, and using a more memory efficient sparse matrix format.
+# To fix this we could either covert to a tm DTM or use text2vec directly. Additionally we could add a weigting attribute 
+# to the t2v dtm using 
+#    attr(t2v_dtm, "weighting") <- c("term frequency", "tf")
+#    class(t2v_dtm) <- c("DocumentTermMatrix", "simple_triplet_matrix")
+# We'll use t2v directly for now.
+cat("LDA documents:", nrow(BoW_lda_model@gamma), "\n")  # Should match:
+cat("DTM documents:", nrow(BoW_lda_dtm), "\n")          # Should match:
+cat("Dataframe rows:", nrow(function_df), "\n")          # The mismatch
+
+# Now do verification
+Matrix::nnzero(t2v_lda_dtm)
+
+# Inspect first document
+
+# 1. Check matrix type
+print(class(t2v_dtm))  # Should show "dgCMatrix"
+
+# 2. Inspect first non-empty document
+# 1. Find first non-empty document
+nonzero_docs <- which(rowSums(t2v_dtm) > 0)[1]
+print(paste("First non-empty gene at position:", nonzero_docs))
+
+# Complete diagnostics.
+# 1. Check current object
+cat("Object type:", class(t2v_dtm), "\n")
+cat("Dimensions:", if(is.null(dim(t2v_dtm))) "vector" else dim(t2v_dtm), "\n")
+
+# 2. If corrupted, recreate
+if(!inherits(t2v_dtm, "dgCMatrix")) {
+  warning("Recreating DTM...")
+  t2v_dtm <- create_dtm(itoken(your_text_data), 
+                     vocab_vectorizer(create_vocabulary(itoken(your_text_data))))
+}
+
+# 3. Safe inspection
+if(nrow(t2v_dtm) > 0) {
+  doc_index <- which(rowSums(t2v_dtm) > 0)[1]
+  sparse_slice <- t2v_dtm[doc_index, , drop = FALSE]
+  
+  cat("\nFirst non-empty doc:", rownames(t2v_dtm)[doc_index], "\n")
+  print(data.frame(
+    term = colnames(t2v_dtm)[sparse_slice@i + 1],
+    count = sparse_slice@x
+  ))
+} else {
+  warning("No documents with terms found!")
+}
+
+doc_index <- which(rowSums(t2v_dtm) > 0)[1]
+```
+# Now visualize
+```{r}
+# Extract top 10 terms per topic
+BoW_top_terms <- tidy(BoW_lda_model, matrix = "beta") %>%  # From tidytext
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup()
+
+t2v_top_terms <- tidy(t2v_lda_model, matrix = "beta") %>%  # From tidytext
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup()
+
+# Plot
+plots <- list()
+plots[[1]] <- ggplot(BoW_top_terms, aes(x = reorder(BoW_top_terms$term, BoW_top_terms$beta), y = beta, fill = factor(topic))) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  labs(title = "Bag of Words\nTop 10 Terms per Topic", x = "Term", y = "Beta (Probability)")
+
+plots[[2]] <- ggplot(t2v_top_terms, aes(x = reorder(t2v_top_terms$term, beta), y = beta, fill = factor(topic))) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  labs(title = "text2vec\nTop 10 Terms per Topic", x = "Term", y = "Beta (Probability)")
+
+
+library(patchwork)
+combined_plot <- wrap_plots(plots, ncol = 2) +
+  plot_annotation(title = "Comparison of Gene Sorting Methods") &
+  theme_minimal()
+print(combined_plot)
+```
+# Dertermine the top contributing tokens for each cluster.
+```{r, fig.align="center, echo= FALSE, fig.width=5, fig.height=20}
+# Assuming:
+# - `clusters` is a vector of cluster assignments (e.g., from kmeans$cluster)
+# - `dtm` is your Document-Term Matrix (sparse or dense)
+
+# Convert DTM to a dataframe with cluster labels
+term_importance <- as.data.frame(as.matrix(BoW_lda_dtm)) %>%
+  mutate(cluster = function_df$BoW_k_means_cluster) %>%               # Add cluster labels
+  group_by(cluster) %>%
+  summarise(across(everything(), mean)) %>%    # Mean term frequency per cluster
+  pivot_longer(-cluster, names_to = "term", values_to = "mean_tfidf") %>%
+  group_by(cluster) %>%
+  slice_max(mean_tfidf, n = 10) %>%           # Top 10 terms per cluster
+  arrange(cluster, desc(mean_tfidf))
+
+# Visualize
+cluster_comp <- ggplot(term_importance, aes(x = reorder(term, mean_tfidf), y = mean_tfidf, fill = factor(cluster))) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~cluster, scales = "free_y") +
+  labs(x = "Term", y = "Mean TF-IDF Weight", title = "Key Terms per Cluster")
+
+print(cluster_comp)
+```
+
+```{r}
+# Get document-topic probabilities (gamma matrix)
+doc_topics <- tidy(BoW_lda_model, matrix = "gamma")
+
+# Calculate document-document similarity
+doc_sim_matrix <- doc_topics %>%
+  pivot_wider(names_from = topic, values_from = gamma) %>%
+  column_to_rownames("document") %>%
+  as.matrix()
+  #z Transpose for doc-doc similarity
+doc_sim_matrix <-   lsa::cosine(t(doc_sim_matrix))  # Cosine similarity
+# Create document-document edges
+tt_edges <- doc_sim_matrix %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("from") %>%
+  pivot_longer(-from, names_to = "to", values_to = "weight") %>%
+  filter(from < to & weight > 0.2) %>%
+  mutate(type = "doc-doc")
+
+# Get top documents per topic
+topic_docs <- doc_topics %>%
+  group_by(topic) %>%
+  slice_max(gamma, n = 100) %>%
+  ungroup()
+
+# Get top terms per topic
+topic_terms <- tidy(BoW_lda_model, matrix = "beta") %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 5) %>%
+  ungroup()
+
+# Create document-term edges
+dt_edges <- topic_docs %>%
+  inner_join(topic_terms, by = "topic") %>%
+  select(from = document, to = term, topic, weight = gamma) %>%
+  mutate(type = "doc-term")
+
+# Combine all edges
+edges <- bind_rows(tt_edges, dt_edges) %>%
+  mutate(weight = ifelse(is.na(weight), 1, weight))  # Default weight for doc-doc
+
+# Create nodes data
+nodes <- data.frame(
+  name = unique(c(edges$from, edges$to)),
+  type = ifelse(unique(c(edges$from, edges$to)) %in% topic_docs$document, 
+                "document", "term")
+) %>%
+  left_join(
+    bind_rows(
+      doc_topics %>% 
+        group_by(document) %>%
+        slice_max(gamma, n = 1) %>%
+        select(name = document, topic),
+      topic_terms %>%
+        group_by(term) %>%
+        slice_max(beta, n = 1) %>%
+        select(name = term, topic)
+    ),
+    by = "name"
+  )
+
+# Create graph
+doc_term_graph <- tbl_graph(
+  nodes = nodes,
+  edges = edges,
+  directed = TRUE
+)
+
+# Plot
+function_lda_plot <- ggraph(doc_term_graph, layout = "fr") + #, circular = TRUE) +
+  # Document-term edges
+  geom_edge_link(
+    aes(filter = type == "doc-term", alpha = weight*0.1),
+    color = "gray70",
+    width = 0.3
+  ) +
+  # Document-document edges
+  # geom_edge_link(
+  #   aes(filter = type == "doc-doc", width = weight*0.01),
+  #   color = "orange",
+  #   alpha = 0.3
+  # ) +
+  # Nodes
+  geom_node_point(
+    aes(color = as.factor(topic),
+        size = ifelse(type == "term", 5, 3L
+        ),
+    alpha = 0.8),
+    show.legend = NULL
+  ) +
+  # Labels
+  geom_node_text(
+    aes(label = ifelse(type == "term", name, "")), 
+    color = "black", 
+    size = 3,
+    fontface = "bold",
+    repel = TRUE,
+    show.legend = NULL
+  ) +
+  # Hulls
+  geom_mark_hull(
+    aes(x, y, group = topic, fill = as.factor(topic)),
+    concavity = 1,
+    expand = unit(2, "mm"),
+    alpha = 0.05,
+    size = 0.2,
+    show.legened = NULL
+  ) +
+  scale_edge_width(range = c(0.5, 2)) +
+  labs(title = "Combined Document Network") +
+  theme_void()
+
+ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/function_lda_plot.png",
+       dpi=600,
+       height=7.5,
+       width=10)
+
+print(function_lda_plot)
+```
+# Lets try with using the go terms.
+```{r}
+LDA_SSM <- function(Master_df, 
+                    GO_corpus, 
+                    k = 3, 
+                    n_topTerms = 10, 
+                    p_sparse = 0.999,
+                    n_topTopics = 267,
+                    n_topDocs = 1,
+                    hull = FALSE, 
+                    graph_layout = "fr") {
+  # 1. Create Document-Term Matrix
+  dtm <- Master_df %>%
+    unnest_tokens(word, GO_corpus) %>%
+    count(Gene, word) %>%
+    cast_dtm(Gene, word, n)
+  
+  # Validation
+  if(!inherits(dtm, "DocumentTermMatrix")) {
+    stop("Failed to create valid DocumentTermMatrix")
+  }
+  cat("Initial DTM dimensions:", dim(dtm), "\n")
+  
+  # 2. Remove sparse terms and empty documents
+  lda_dtm <- removeSparseTerms(dtm, sparse = p_sparse)
+  lda_dtm <- lda_dtm[rowSums(as.matrix(lda_dtm)) > 0, ]
+  cat("Final DTM dimensions:", dim(lda_dtm), "\n")
+  
+  if(nrow(lda_dtm) == 0) stop("No documents remaining after filtering")
+  
+  # 3. Run LDA
+  lda_model <- LDA(lda_dtm, k = k, control = list(seed = 123))
+  
+  # 4. Extract top terms
+  top_terms <- tidy(lda_model, matrix = "beta") %>%
+    group_by(topic) %>%
+    slice_max(beta, n = n_topTerms) %>%
+    ungroup() %>%
+    arrange(topic, -beta)
+  
+  top_term_plot <- ggplot(top_terms, aes(x = reorder_within(term, beta, topic), 
+                                         y = beta, fill = factor(topic))) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~topic, scales = "free") +
+    coord_flip() +
+    scale_x_reordered() +
+    labs(title = paste("Top", n_topTerms, "Terms per Topic"), 
+         x = "Term", y = "Beta (Probability)")
+  
+  # 5. Compute log2fold ratios
+  abs_ratio <- Master_df %>%
+    filter(genotype %in% c("s4", "NC")) %>%
+    group_by(Gene) %>%
+    filter(n() == 2) %>%
+    summarize(
+      log2fold_ratio = abs(log2FoldChange[genotype == "s4"]) / 
+                       abs(log2FoldChange[genotype == "NC"]),
+      color = case_when(
+        log2fold_ratio > 1 ~ "red",
+        log2fold_ratio < 1 ~ "blue",
+        TRUE ~ "gray"
+      )
+    )
+  
+  # 6. Prepare GO term mapping
+  all_go_ids <- unique(unlist(strsplit(Master_df$GO, split = ",\\s*")))
+  all_go_ids <- all_go_ids[!is.na(all_go_ids)]
+  
+  go_terms <- tryCatch({
+    data.frame(
+      GOID = all_go_ids,
+      Term = AnnotationDbi::Term(all_go_ids)
+    )
+  }, error = function(e) {
+    warning("GO term mapping failed: ", e$message)
+    data.frame(GOID = all_go_ids, Term = all_go_ids)
+  })
+  
+  # 7. Document-topic probabilities
+  doc_topics <- tidy(lda_model, matrix = "gamma")
+  
+  # 8. Create network components
+  topic_docs <- doc_topics %>%
+    group_by(topic) %>%
+    slice_max(gamma, n = n_topDocs) %>%
+    ungroup()
+  
+  topic_terms <- top_terms %>%
+    group_by(topic) %>%
+    slice_max(beta, n = n_topTerms) %>%
+    ungroup()
+  
+  # Create edges
+  dt_edges <- topic_docs %>%
+    inner_join(topic_terms, by = "topic") %>%
+    transmute(
+      from = document,
+      to = term,
+      topic = topic,
+      weight = gamma,
+      type = "doc-term"
+    )
+  
+  # Create nodes
+  nodes <- data.frame(
+    name = unique(c(dt_edges$from, dt_edges$to)),
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(
+      type = ifelse(name %in% dt_edges$from, "document", "term"),
+      topic = ifelse(
+        type == "document",
+        doc_topics$topic[match(name, doc_topics$document)],
+        topic_terms$topic[match(name, topic_terms$term)]
+      ),
+      color = case_when(
+        type == "document" & name %in% abs_ratio$Gene ~ abs_ratio$color[match(name, abs_ratio$Gene)],
+        type == "term" ~ viridis(k)[topic],
+        TRUE ~ "gray80"
+      ),
+      label = ifelse(
+        type == "term",
+        go_terms$Term[match(gsub("go", "GO:", name), go_terms$GOID)],
+        name
+      )
+    )
+  
+  # Create graph
+  doc_term_graph <- tbl_graph(
+    nodes = nodes,
+    edges = dt_edges,
+    directed = TRUE
+  )
+  
+  # Plot graph
+  sgraph <- ggraph(doc_term_graph, layout = graph_layout) +
+    geom_edge_link(
+      aes(alpha = 0.5),#as.character(topic), alpha = weight),
+      color = "grey",
+      width = 0.5
+    ) +
+    geom_node_point(
+      aes(color = color, size = ifelse(type == "term", 4, 2),
+      alpha = 1.0)
+    ) +
+    geom_node_text(
+      aes(label = label, filter = type == "document"),
+      repel = TRUE,
+      size = 1
+    ) +
+    geom_node_text(
+      aes(
+        label = ifelse(type == "term", label, ""),
+        size = ifelse(type == "term", 3, 0)  # Dynamic sizing
+      ),
+      repel = TRUE,
+      box.padding = 0.2,
+      point.padding = 0.1,
+      size = 3,
+      color = "Black",
+      max.overlaps = 20
+    ) +
+    if (hull){
+    geom_mark_hull(
+      aes(x, y, group = topic, fill = as.factor(topic)),
+      concavity = 1,
+      expand = unit(2, "mm"),
+      alpha = 0.05,
+      size = 0.2
+    )
+    } + 
+    
+    guides(
+      color = topic,
+      size = "none",
+      alpha = "none"
+    ) +
+    scale_color_identity() +
+    
+    # Adjust scales and theme
+    scale_size_continuous(range = c(2, 6)) +
+    coord_cartesian(clip = "off")+ # Allow labels to extend beyond plot
+    labs(title = "Document-Term Network")
+  
+  return(list(
+    simPlot = sgraph,
+    topTermPlot = top_term_plot,
+    topTerms = top_terms,
+    goTerms = go_terms
+  ))
+}
+```
+#Create labels for nodes and color codings
+```{r}
+library(plotly)
+function_df <- read.csv("../Data/Function_Descriptions.csv", row.names = 1)
+# Check the exact gene name in UniProt first
+function_descriptions <- function_df$GO
+
+corpus <- Corpus(VectorSource(function_descriptions)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeWords, paste0("\\b", stopwords("en"), "\\b")) %>%
+  tm_map(stemDocument)
+
+function_df$Functions <- sapply(corpus, as.character)
+#function_df <- na.omit(function_df)
+#function_df <- subset(function_df, select = - function_term)
+Master_df <- inner_join(function_df, heatmap_data, by = "Gene")
+
+Master_df$GO_corpus <- sapply(corpus, as.character)
+Master_df <- na.omit(Master_df)
+
+Master_df$identity <- paste(Master_df$Gene, Master_df$genotype)
+
+plots <- list()
+for (k in c(3, 4, 5, 6, 7, 8, 9, 10, 11)){
+  results  <- LDA_SSM(Master_df, 
+                      GO_corpus = Master_df$GO_corpus,
+                      k = k,
+                      n_topTerms = 3, 
+                      p_sparse = 0.94,
+                      n_topTopics = k,
+                      n_topDocs = 50,
+                      graph_layout = "stress",
+  )
+  plots[[k-2]] <- results$simPlot
+}
+library(patchwork)
+combined_plot <- wrap_plots(plots, ncol = 3) +
+  plot_annotation(title = "Comparison of Gene Sorting Methods") &
+  theme(plot.margin = margin(1,1,1,1, "cm"))
+
+ggsave("../Figures/combined_sim_graphs.png", 
+       combined_plot, 
+       width = 24,
+       height = 20,
+       dpi=300,
+       limits = FALSE)
+```
+
+```{r}
+LDA_SSM <- function(Master_df, 
+                    GO_corpus, 
+                    k = 3, 
+                    n_topTerms = 10, 
+                    p_sparse = 0.999,
+                    n_topDocs = 1,
+                    hull = FALSE, 
+                    graph_layout = "fr") {
+  
+  # Load required packages quietly
+  suppressPackageStartupMessages({
+    require(tidytext)
+    require(topicmodels)
+    require(ggraph)
+    require(tidygraph)
+    require(patchwork)
+    require(viridis)
+    require(AnnotationDbi)
+  })
+  
+  # 1. Create DTM more efficiently
+  dtm <- Master_df %>%
+    unnest_tokens(word, !!sym(GO_corpus)) %>%
+    count(Gene, word) %>%
+    cast_dtm(Gene, word, n)
+  
+  # Validate DTM
+  if(!inherits(dtm, "DocumentTermMatrix")) {
+    stop("Failed to create valid DocumentTermMatrix")
+  }
+  message("Initial DTM dimensions: ", paste(dim(dtm), collapse = " x "))
+  
+  # 2. Filter sparse terms and empty docs
+  lda_dtm <- dtm %>%
+    removeSparseTerms(sparse = p_sparse) %>%
+    .[rowSums(as.matrix(.)) > 0, ]
+  
+  message("Final DTM dimensions: ", paste(dim(lda_dtm), collapse = " x "))
+  if(nrow(lda_dtm) == 0) stop("No documents remaining after filtering")
+  
+  # 3. Run LDA with progress
+  message("Running LDA with k=", k, " topics...")
+  lda_model <- LDA(lda_dtm, k = k, control = list(seed = 123))
+  
+  # 4. Extract top terms with progress bar
+  message("Extracting top terms...")
+  top_terms <- tidy(lda_model, matrix = "beta") %>%
+    group_by(topic) %>%
+    slice_max(beta, n = n_topTerms, with_ties = FALSE) %>%
+    ungroup() %>%
+    arrange(topic, -beta)
+  
+  top_term_plot <- ggplot(top_terms, aes(x = reorder_within(term, beta, topic), 
+                                        y = beta, fill = factor(topic))) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~topic, scales = "free") +
+    coord_flip() +
+    scale_x_reordered() +
+    labs(title = paste("Top", n_topTerms, "Terms per Topic"), 
+         x = "Term", y = "Beta (Probability)") +
+    theme_minimal()
+  
+  # 5. Compute log2fold ratios more efficiently
+  abs_ratio <- Master_df %>%
+    filter(genotype %in% c("s4", "NC")) %>%
+    group_by(Gene) %>%
+    filter(n() == 2) %>%
+    summarize(
+      log2fold_ratio = abs(log2FoldChange[genotype == "s4"]) / 
+                       abs(log2FoldChange[genotype == "NC"]),
+      color = case_when(
+        log2fold_ratio > 1 ~ "red",
+        log2fold_ratio < 1 ~ "blue",
+        TRUE ~ "gray"
+      )
+    )
+  
+  # 6. Improved GO term mapping with caching
+  all_go_ids <- unique(na.omit(unlist(strsplit(Master_df$GO, ",\\s*"))))
+  
+  go_terms <- tryCatch({
+    data.frame(
+      GOID = all_go_ids,
+      Term = AnnotationDbi::Term(all_go_ids),
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) {
+    warning("GO term mapping failed: ", e$message)
+    data.frame(GOID = all_go_ids, Term = all_go_ids, stringsAsFactors = FALSE)
+  })
+  
+  # 7. Document-topic probabilities
+  doc_topics <- tidy(lda_model, matrix = "gamma")
+  
+  # 8. Network creation optimized
+  create_network <- function() {
+    topic_docs <- doc_topics %>%
+      group_by(topic) %>%
+      slice_max(gamma, n = n_topDocs, with_ties = FALSE) %>%
+      ungroup()
+    
+    topic_terms <- top_terms %>%
+      group_by(topic) %>%
+      slice_max(beta, n = n_topTerms, with_ties = FALSE) %>%
+      ungroup()
+    
+    # Create edges
+    dt_edges <- topic_docs %>%
+      inner_join(topic_terms, by = "topic") %>%
+      transmute(
+        from = document,
+        to = term,
+        topic = topic,
+        weight = gamma,
+        type = "doc-term"
+      )
+    
+    # Create nodes with memoization
+    nodes <- tibble(
+      name = unique(c(dt_edges$from, dt_edges$to))
+    ) %>%
+      mutate(
+        type = ifelse(name %in% dt_edges$from, "document", "term"),
+        topic = ifelse(
+          type == "document",
+          doc_topics$topic[match(name, doc_topics$document)],
+          topic_terms$topic[match(name, topic_terms$term)]
+        ),
+        color = case_when(
+          type == "document" & name %in% abs_ratio$Gene ~ 
+            abs_ratio$color[match(name, abs_ratio$Gene)],
+          type == "term" ~ viridis(k, option = "D")[topic],
+          TRUE ~ "gray80"
+        ),
+        label = ifelse(
+          type == "term",
+          go_terms$Term[match(gsub("go", "GO:", name), go_terms$GOID)],
+          name
+        ),
+        size = ifelse(type == "term", 4, 2)
+      )
+    
+    tbl_graph(nodes = nodes, edges = dt_edges, directed = FALSE)
+  }
+  
+  doc_term_graph <- create_network()
+  
+  # 9. Optimized plotting
+  message("Creating network visualization...")
+  base_plot <- ggraph(doc_term_graph, layout = graph_layout) +
+    geom_edge_link(
+      color = "grey",
+      width = 0.5,
+      alpha = 0.5
+    ) +
+    geom_node_point(
+      aes(color = color, size = size),
+      alpha = 1.0
+    ) +
+    scale_size_identity() +
+    scale_color_identity() +
+    coord_cartesian(clip = "off") +
+    labs(title = "Document-Term Network") +
+    theme_graph()
+  
+  # Conditional hull addition
+  if(hull) {
+    base_plot <- base_plot + 
+      geom_mark_hull(
+        aes(x, y, group = topic, fill = as.factor(topic)),
+        concavity = 1,
+        expand = unit(2, "mm"),
+        alpha = 0.05,
+        size = 0.2,
+        show.legend = FALSE
+      )
+  }
+  
+  # Add text layers last for better rendering
+  final_plot <- base_plot +
+    geom_node_text(
+      aes(label = ifelse(type == "document", label, ""),
+          size = 3),
+      repel = TRUE,
+      max.overlaps = Inf,
+      point.padding = 0.1,
+      box.padding = 0.2
+    ) +
+    geom_node_text(
+      aes(label = ifelse(type == "term", label, ""),
+          size = 2),
+      repel = TRUE,
+      color = "black",
+      max.overlaps = 20,
+      point.padding = 0.05,
+      box.padding = 0.1
+    )
+  
+  return(list(
+    simPlot = final_plot,
+    topTermPlot = top_term_plot,
+    topTerms = top_terms,
+    goTerms = go_terms,
+    ldaModel = lda_model
+  ))
+}
+
+# Optimized plotting code
+library(future)
+plan(multisession)  # Enable parallel processing
+
+# Preprocess data more efficiently
+preprocess_data <- function() {
+  function_df <- read.csv("../Data/Function_Descriptions.csv", 
+                         stringsAsFactors = FALSE)
+  heatmap_data <- read.csv("../Data/Heatmap_Data.csv", 
+                          stringsAsFactors = FALSE)
+  
+  corpus <- tm::Corpus(tm::VectorSource(function_df$GO)) %>%
+    tm::tm_map(tm::removePunctuation) %>%
+    tm::tm_map(tm::removeWords, tm::stopwords("en")) %>%
+    tm::tm_map(tm::stemDocument)
+  
+  function_df$GO_corpus <- sapply(corpus, as.character)
+  
+  Master_df <- merge(function_df, heatmap_data, by = "Gene", all = FALSE) %>%
+    na.omit() %>%
+    mutate(identity = paste(Gene, genotype))
+  
+  return(Master_df)
+}
+
+Master_df <- preprocess_data()
+
+# Parallelized plot generation
+generate_plots <- function(k_values) {
+  furrr::future_map(k_values, function(k) {
+    results <- LDA_SSM(
+      Master_df,
+      GO_corpus = "GO_corpus",
+      k = k,
+      n_topTerms = 3,
+      p_sparse = 0.94,
+      n_topDocs = 50,
+      graph_layout = "stress"
+    )
+    results$simPlot
+  }, .options = furrr::furrr_options(seed = TRUE))
+}
+
+k_values <- 3:11
+plots <- generate_plots(k_values)
+
+# Save combined plot with proper dimensions
+combined_plot <- wrap_plots(plots, ncol = 3, guides = "collect") +
+  plot_annotation(title = "Comparison of Gene Sorting Methods") &
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+
+ggsave(
+  "../Figures/combined_sim_graphs.png",
+  combined_plot,
+  width = 24,
+  height = 20,
+  dpi = 300,
+  limitsize = FALSE
+)
+write.csv(Master_df, file = "../Data/Master_df.csv", row.names = FALSE)
+```
+```{r}
+Master_df$identity <- paste(Master_df$Gene, Master_df$genotype)
+Master_df
+```
+
+```{r}
+source("optimized_lda.R")
+# Initialize analyzer with validation
+analyzer <- OptimizedLDAAnalyzer$new(
+  master_df = Master_df,
+  go_corpus_col = "GO"  # Column containing GO terms
+)
+```
+
+```{r}
+# Debug
+analyzer$validate()
+analyzer$master_df
+analyzer$go_corpus_col
+analyzer$get_valid_go()
+analyzer$prepare_dtm()
+dtm <- analyzer$dtm
+analyzer$find_optimal_k()
+k <- analyzer$optimal_k
+analyzer$fit_lda()
+lda_model <- analyzer$lda_model
+analyzer$build_genotype_network()
+top_doc_network <- analyzer$build_topic_document_graph(gamma_threshold = 0.1)
+topic_network <- analyzer$build_topic_network()
+analyzer$plot_topic_document_graph()
+analyzer$plot_enhanced_topic_network()
+combined_network <- analyzer$combine_networks()`
+```
+```{r}
+analyzer$doc_topics
+```
+```{r}
+analyzer$go_map
+analyzer$topic_doc_graph
+```
+
+```{r}
+top_doc_network
+```
+
+```{r}
+analyzer$doc_topics
+```
+```{r}
+all_go_ids <- unique(unlist(strsplit(Master_df$GO, split = ",\\s*")))
+  all_go_ids <- all_go_ids[!is.na(all_go_ids)]
+  
+  go_terms <- tryCatch({
+    data.frame(
+      GOID = all_go_ids,
+      Term = AnnotationDbi::Term(all_go_ids)
+    )
+  }, error = function(e) {
+    warning("GO term mapping failed: ", e$message)
+    data.frame(GOID = all_go_ids, Term = all_go_ids)
+  })
+  
+top_terms <- data.frame(lapply(top_terms, gsub, pattern = "go:", replacement = "GO:"))
+top_terms <- top_terms %>%
+  mutate(
+    Term = go_terms$Term[match(terms, go_terms$GOID)]
+  )
+```
+# Key Centrality Methods
+## Function	Biological Interpretation	Use Case
+ - centrality_degree()	Counts connections to other topics.	Identify hub topics
+ - centrality_betweenness()	Detects topics bridging different clusters.	Find integrative biological themes
+ - centrality_pagerank()	Measures influence through network flows.	Rank topics by importance
+ - centrality_eigen()	Scores well-connected neighbor influence.	Find core regulatory processes
+```{r}
+library(ggraph)
+library(tidygraph)
+library(patchwork)
+library(plotly)
+
+plot_centrality <- function(network, layout = "fr", label_quantile = 0.75) {
+  # Create consistent theme
+  net_theme <- function() {
+    theme_void() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.margin = margin(5, 5, 5, 5)
+      )
+  }
+  
+  # Helper function to create individual plots
+  create_centrality_plot <- function(network, size_var, color_var, title) {
+    ggraph(network, layout = layout) +
+      geom_edge_link(aes(alpha = weight), 
+                    color = "grey85",
+                    show.legend = FALSE) +
+      geom_node_point(aes(size = !!sym(size_var), 
+                         color = !!sym(color_var),
+                         text = paste(
+                           "Topic:", topic, "\n",
+                           "Degree:", round(degree, 2), "\n",
+                           "Betweenness:", round(betweenness, 2), "\n",
+                           "PageRank:", round(page_rank, 2), "\n",
+                           "Eigen:", round(eigen, 2)
+                         ))) +
+      geom_node_label(
+        aes(label = ifelse(degree > quantile(degree, label_quantile), 
+                          paste("Topic", topic), ""),
+            filter = degree > quantile(degree, label_quantile)),
+        repel = TRUE,
+        size = 3,
+        label.padding = unit(0.15, "lines")
+      ) +
+      scale_size_continuous(range = c(3, 8)) +
+      scale_color_viridis_c(option = "plasma") +
+      labs(title = title) +
+      net_theme()
+  }
+  
+  # Generate all plot combinations
+  plots <- list(
+    create_centrality_plot(network, "degree", "betweenness", "Degree vs Betweenness"),
+    create_centrality_plot(network, "degree", "page_rank", "Degree vs PageRank"),
+    create_centrality_plot(network, "degree", "eigen", "Degree vs Eigen Centrality"),
+    create_centrality_plot(network, "betweenness", "page_rank", "Betweenness vs PageRank"),
+    create_centrality_plot(network, "betweenness", "eigen", "Betweenness vs Eigen"),
+    create_centrality_plot(network, "page_rank", "eigen", "PageRank vs Eigen")
+  )
+  
+  # Combine with patchwork
+  combined <- wrap_plots(plots, ncol = 3) +
+    plot_annotation(
+      title = "Topic Network Centrality Analysis",
+      subtitle = "Node size represents first metric, color represents second metric",
+      theme = theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5)
+      )
+    )
+  
+  # Return both static and interactive versions
+  list(
+    static = combined,
+    interactive = ggplotly(plots[[1]], tooltip = "text")  # First plot as interactive
+  )
+}
+
+# Usage:
+viz <- plot_centrality(topic_network, layout = "stress")
+print(viz$static)  # Print beautiful static version
+viz$interactive    # Explore interactive version
+```
+
+```{r}
+library(ggraph)
+library(tidygraph)
+library(ggplot2)
+library(plotly)
+Sys.setlocale(category = "LC_ALL", locale = "en_US.UTF-8")  # Linux/macOS
+
+plot_network <- function(network, layout = "fr", 
+                         min_edge_alpha = 0.2, 
+                         label_quantile = 0.9,
+                         top_terms = NULL) {
+    # Check if input is a tbl_graph; if not, try to convert it
+
+    # 1. Extract node data to verify genotypes
+  node_data <- network %>% activate(nodes) %>% as_tibble()
+  
+  # 2. Ensure genotype is a factor with valid levels
+  if ("genotype" %in% names(node_data)) {
+    network <- network %N>%
+      mutate(
+        genotype = factor(genotype, levels = c("WT", "NC", "s4")),  # Adjust levels as needed
+        shape = as.numeric(genotype)  # Map to numeric shape codes
+      )
+  } else {
+    network <- network %N>% mutate(shape = 16)  # Default circle
+  }
+  # Normalize metrics for visualization
+  
+  network <- network %N>%
+    mutate(
+      #size = log2FoldChange,
+      size = scales::rescale(centrality_alpha(), to = c(3, 10)),
+      color = log2FoldChange
+      #color = scales::rescale(eigen, to = c(0, 1))
+    ) %E>%
+    mutate(
+      weight = scales::rescale(weight, to = c(min_edge_alpha, 1))
+    )
+  
+  if (!is.null(top_terms)) {
+    network <- network %N>%
+      mutate(
+        name = top_terms$Term[match(topic, top_terms$topic)]
+      )} else if ("topic" %in% (network %>% activate(nodes) %>% as_tibble() %>% names()))  {
+      network <- network %N>%
+        mutate(
+          name = topic
+        )} else if ("document" %in% (network %>% activate(nodes) %>% as_tibble() %>% names())) {
+      network <- network %N>% 
+        mutate(
+          name = document
+        )} else if ("term" %in% colnames(network)) {lll
+    } else {
+      stop("No valid topic column found in the network.")
+    }
+  
+  print(network)
+  # Create the plot
+  p <- ggraph(network, layout = layout) +
+    # Edges - alpha mapped to weight
+    geom_edge_bend0(
+      aes(alpha = weight),
+      color = "black",
+      width = 0.8,
+      show.legend = TRUE
+    ) +
+    # Nodes - size to degree, color to eigen centrality
+    geom_node_point(
+      aes(size = size, 
+          color = color,
+          shape = factor(genotype)
+      ),
+      alpha = 0.8,
+      show.legend = TRUE
+    ) +
+    # Labels for top central nodes
+    geom_node_label(
+      aes(
+      label =  name),
+      #filter = centrality_alpha > quantile(centrality_alpha, label_quantile, na.rm = TRUE),
+      repel = TRUE,
+      size = 3,
+      fill = alpha("white", 0.6),
+      label.size = 0.1,
+      label.padding = unit(0.1, "lines")
+    ) + 
+    # Visual refinements
+    scale_size_identity() +
+    scale_color_viridis_c(
+      option = "plasma",
+      guide = guide_colorbar(
+        title = "Eigen Centrality",
+        barwidth = unit(1, "cm")
+      )
+    ) +
+    scale_edge_alpha(
+      name = "Edge Weight",
+      guide = guide_legend(
+        title.position = "top",
+        label.position = "bottom")
+    ) +
+    labs(
+      title = "Topic Network Analysis",
+      subtitle = "Node size ~ Alpha Centrality | Color ~ Eigen Centrality | Edge transparency ~ Edge Weight"
+    ) +
+    theme_graph(base_family = "sans") +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
+  return(p)
+}
+
+topic_network_tibble = as.tibble(topic_network)
+# Filter out WT nodes and their edges
+filtered_topic_network <- genotype_network %>%
+  activate(nodes) %>%               # Focus on nodes
+  filter(genotype != "WT") %>%      # Keep only non-WT nodes
+  activate(edges) %>%               # Automatically drops disconnected edges
+  filter(!edge_is_incident("WT"))   # Explicit edge removal (optional)
+
+
+# Plot with alpha centrality
+p1 <- plot_network(genotype_network, layout = "kk")#, top_terms=top_terms)  # Use Kamada-Kawai layout
+p2 <- plot_network(filtered_topic_network, layout = "kk")  # Use Kamada-Kawai layout
+
+plots <- p1 + p2
+
+library(patchwork)
+combined_plot <- wrap_plots(plots, ncol = 2) +
+  plot_annotation(title = "Comparison of Gene Sorting Methods") &
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red") &
+  theme_minimal()
+#print(combined_plot)
+
+ggsave("combined_plot.pdf", combined_plot, width = 40, height = 10)
+
+print(p)
+```

@@ -1,0 +1,94 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2")
+library("tximportData")
+library(data.table)
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+quant_fp <- paste(cwd, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Print quant files for verification
+print(quant_files)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+```{r}
+print(sample_names)
+```
+
+```{r}
+# Create the txi import
+txiNC1NCind1 <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+
+# Define conditions for NC and NC_ind_1
+#onditionNC1NCind1 <- ifelse(grepl("NC_1", sample_names), "NC",
+                        #ifelse(grepl("s4_1", sample_names), "s4", NA))
+```
+
+```{r}
+colnames(txiNC1NCind1$abundance) <- sample_names
+colnames(txiNC1NCind1$counts) <- sample_names
+colnames(txiNC1NCind1$length) <- sample_names
+```
+
+```{r}
+print(colnames(txiNC1NCind1$counts))
+```
+
+```{r}
+
+print(sample_names)
+```
+```{r}
+print(txiNC1NCind1$counts)
+```
+```{r}
+print(txi)
+```
+```{r}
+# Create sample table
+# Check that conditionNC1NCind1 has at least two unique values, like "NC" and "s4"
+sample_info <- data.frame(
+  sample_names = sample_names,
+  conditionNC1NCind1 = ifelse(grepl("NC_1", sample_names), "NC", 
+                              ifelse(grepl("NC_ind_1", sample_names), "NC_ind_1", NA))
+)
+
+# Remove rows with NA in conditionNC1NCind1, if needed
+sample_info <- sample_info[!is.na(sample_info$conditionNC1NCind1), ]
+
+# Filter out rows with NA in sample_info
+samples_to_keep <- sample_info$sample_names  # For example, based on `sample_info`
+
+# Create a filtered version of txi by subsetting each component
+txi_filtered <- list(
+  counts = txi$counts[, samples_to_keep],
+  abundance = txi$abundance[, samples_to_keep],
+  length = txi$length[, samples_to_keep],
+  countsFromAbundance = "scaledTPM"
+)
+# Proceed with creating the DESeqDataSet
+ddsNC1NCind1 <- DESeqDataSetFromTximport(txi = txi_filtered, colData = sample_info, design = ~conditionNC1NCind1)
+
+```
+```{r}
+dds = DESeq(dds)
+```
+
+

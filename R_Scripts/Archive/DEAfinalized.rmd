@@ -1,0 +1,73 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2")
+library("tximportData")
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+quant_fp <- paste(cwd, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+
+```{r}
+print(sample_names)
+```
+
+```{r}
+# Create the txi import
+txi <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+```
+
+```{r}
+colnames(txi$abundance) <- sample_names
+colnames(txi$counts) <- sample_names
+colnames(txi$length) <- sample_names
+```
+
+```{r}
+sample_info <- data.frame(
+    sample_names = sample_names,
+    condition = factor(ifelse(grepl("NC_1", sample_names), "NC_1", 
+                              ifelse(grepl("NC_ind_1", sample_names), "NC_ind_1", NA)))
+)
+sample_info <- sample_info[!is.na(sample_info$condition), ]
+
+samples_to_keep <- sample_info$sample_names
+print(samples_to_keep)
+
+# Subset txi
+txi_filtered <- list(
+    counts = txi$counts[, samples_to_keep],
+    abundance = txi$abundance[, samples_to_keep],
+    length = txi$length[, samples_to_keep]
+)
+
+dds <- DESeqDataSetFromTximport(txi = txi_filtered, colData = sample_info, design = ~condition)
+dds <- DESeq(dds)
+
+
+```{r}
+res <- results(dds)
+```
+
+```{r}
+plotMA(res)
+```
+
+
+
+

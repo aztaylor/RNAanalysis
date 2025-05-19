@@ -1,0 +1,96 @@
+```{r} 
+# Load necessary libraries 
+library("tximport") 
+library("readr")
+library("DESeq2") 
+library(data.table)
+```
+
+```{R}
+# List all of the quant.sf files
+cwd <- getwd() 
+quant_fp <- paste(cwd, 'quants', sep = '/') 
+quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
+```
+
+```{r}
+# Print quant files for verification
+print(quant_files)
+```
+
+```{r}
+# Extract sample names
+quant_dirs <- list.files(quant_fp, 
+                        pattern = "_quant$", 
+                        full.names = TRUE)
+sample_names <- gsub("_quant$", "", basename(quant_dirs)) 
+# Correct for the FASTQ generation file included in the directory sample_names \<-
+sample_names <- sample_names[1:48] # Ensure this range fits your data
+```
+```{r}
+print(sample_names)
+```
+
+```{r}
+# Create the txi import
+txiNC1NCind1 <- tximport(files = paste(quant_fp, quant_files, sep = '/'), type = "salmon", txOut = TRUE)
+
+# Define conditions for NC and NC_ind_1
+#conditionNC1NCind1 <- ifelse(grepl("NC_1", sample_names), "NC",
+#                             ifelse(grepl("NC_1_ind", sample_names), 
+#                             "NC_ind_1", NA))
+```
+```{r}
+colnames(txiNC1NCind1$abundance) <- sample_names
+colnames(txiNC1NCind1$counts) <- sample_names
+colnames(txiNC1NCind1$length) <- sample_names
+```
+
+```{r}
+print(colnames(txiNC1NCind1$counts))
+```
+
+```{r}
+
+print(sample_names)
+```
+```{r}
+print(txiNC1NCind1$counts)
+```
+
+```{r}
+# Create sample table
+sample_info <- data.frame(
+  sample_names = sample_names,
+  conditionNC1NCind1 = ifelse(grepl("NC_1", sample_names), "NC_1", 
+                              ifelse(grepl("NC_ind_1", sample_names), "NC_ind_1", NA))
+)
+
+print(sample_info)
+# Remove rows with NA in conditionNC1NCind1, if needed
+sample_info <- sample_info[!is.na(sample_info$conditionNC1NCind1), ]
+
+# Filter sample table to remove NA conditions
+filtered_txiNC1NCind1 <- list(
+  counts = txiNC1NCind1$counts[, sample_info$sampleName],
+  lengths = txiNC1NCind1$lengths[, sample_info$sampleName],
+  abundance = txiNC1NCind1$abundance[, sample_info$sampleName])
+
+# Now use the full txi object instead of just counts
+ddsNC1NCind1 <- DESeqDataSetFromTximport( txi = txi, colData = sample_info, design = ~conditionNC1NCind1)
+```
+```{r}
+print(colnames(txiNC1NCind1))
+```
+```{r}
+dim(txi$counts)
+dim(filtered_sampleTableNC1NCind1)
+```
+```{r}
+print(sampleTableNC1NCind1)
+```
+
+```{r}
+print(txiNC1NCind1)
+```
+

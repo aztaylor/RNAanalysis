@@ -476,10 +476,11 @@ OptimizedLDAAnalyzer <- R6Class(
     #' \dontrun{
     #' combined <- analyzer1$combine_networks(analyzer2)
     #' }
-    combine_networks = function(analyzer) {
+    combine_networks = function() {
       # Get both graphs
-      doc_graph <- analyzer$topic_doc_graph
-      term_graph <- analyzer$tn_graph
+      
+      doc_graph <- self$topic_doc_graph
+      term_graph <- self$tn_graph
       
       # Rename term graph nodes to avoid conflicts
       term_graph <- term_graph %>%

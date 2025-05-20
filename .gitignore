@@ -14,7 +14,7 @@ Figures/
 Trimmed_fastqs/
 Trimmed_FastQC_outputs/
 datavcsv.csv
-
+Figures/
 merge_fastqs
 Secrets/
 DESeqResults/

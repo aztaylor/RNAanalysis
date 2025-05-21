@@ -26,22 +26,36 @@ library(widyr)
 OptimizedLDAAnalyzer <- R6Class(
   "OptimizedLDAAnalyzer",
   public = list(
+    combined_network = NULL,
+    doc_doc_edges = NULL,
+    doc_network = NULL,
+    doc_network_edges = NULL,
+    doc_network_nodes = NULL,
+    doc_network_nodes_expanded = NULL,
+    doc_nodes = NULL,
     doc_topics = NULL,
+    doc_topic_edges = NULL,
     dtm = NULL,
     expanded_edges = NULL,
     g_edges = NULL,
     g_nodes = NULL,
+    genotype_edges = NULL,
     go_corpus_col = NULL,
     go_map = NULL,
     k_metrics = NULL,
     lda_model = NULL,
     master_df = NULL,
-    net_graph = NULL,
+    multiplex_edges = NULL,
+    multiplex_network = NULL,
+    multiplex_nodes = NULL,
+    geno_graph = NULL,
     optimal_k = NULL,
     terms = NULL,
-    tn_graph = NULL,
+    term_term_edges = NULL,
+    topic_network = NULL,
     top_terms = NULL,
-    topic_doc_graph = NULL,
+    topic_edges = NULL,
+    topic_doc_network = NULL,
     topic_gene_matrix = NULL,
     topic_labels = NULL,
     topic_sim = NULL,
@@ -92,6 +106,56 @@ OptimizedLDAAnalyzer <- R6Class(
     
     set_valid_go = function(value) {
       stop("Use validate_go_terms() to set valid_go")
+    },
+    
+    get_top_terms = function(n = NULL) {
+      if (is.null(self$top_terms)) {
+        warning("Top terms not extracted yet. Run fit_lda() first.")
+        return(NULL)
+      }
+      if (!is.null(n)) {
+        return(self$top_terms %>% group_by(topic) %>% slice_head(n = n))
+      }
+      return(self$top_terms)
+    },
+    
+    get_formatted_top_terms = function(n = 1, wide_format = TRUE) {
+      self$terms <- self$top_terms
+      if (wide_format) {
+        self$terms %>%
+          group_by(topic) %>%
+          summarize(
+            term = paste(term, collapse = ", "),
+            mean_beta = mean(beta)
+          )
+      } else {
+        self$terms
+      }
+    },
+    
+    build_go_map = function() {
+      if (is.null(self$terms)) {
+        message("Formatted top terms is empty, creating tibble...")
+        self$get_formatted_top_terms()
+      }
+      
+      all_go_ids <- unique(unlist(strsplit(self$master_df$GO, split = ",\\s*")))
+      all_go_ids <- all_go_ids[!is.na(all_go_ids)]
+      
+      self$go_map <- tryCatch({
+        data.frame(lapply(self$terms, gsub, pattern = "go:", replacement = "GO:")) %>%
+          mutate(
+            TERM = AnnotationDbi::Term(term)
+          ) %>% 
+          group_by(topic) %>%
+          arrange(rank, .by_group = TRUE) %>%
+          slice_head(n = 1) %>%
+          ungroup() %>%
+          mutate(topic = paste0("Topic_", topic))
+      }, error = function(e) {
+        warning("GO term mapping failed: ", e$message)
+        data.frame(GOID = all_go_ids, Term = all_go_ids)
+      })
     },
     
     # 1. Optimized DTM Preparation
@@ -201,31 +265,6 @@ OptimizedLDAAnalyzer <- R6Class(
       invisible(self)
     },
     
-    get_top_terms = function(n = NULL) {
-      if (is.null(self$top_terms)) {
-        warning("Top terms not extracted yet. Run fit_lda() first.")
-        return(NULL)
-      }
-      if (!is.null(n)) {
-        return(self$top_terms %>% group_by(topic) %>% slice_head(n = n))
-      }
-      return(self$top_terms)
-    },
-    
-    get_formatted_top_terms = function(n = 1, wide_format = TRUE) {
-      self$terms <- self$top_terms
-      if (wide_format) {
-        self$terms %>%
-          group_by(topic) %>%
-          summarize(
-            term = paste(term, collapse = ", "),
-            mean_beta = mean(beta)
-          )
-      } else {
-        self$terms
-      }
-    },
-    
     #' Build Genotype Network
     #' 
     #' Constructs a network graph connecting genes to topics based on their genotype associations.
@@ -256,11 +295,11 @@ OptimizedLDAAnalyzer <- R6Class(
           )
         )
       
-      self$net_graph <- tbl_graph(
+      self$geno_graph <- tbl_graph(
         nodes = self$g_nodes,
         edges = self$g_edges %>% select(from = document, to = topic, weight = gamma)
       )
-      self$net_graph <- self$net_graph %>%
+      self$geno_graph <- self$geno_graph %>%
         mutate(
           degree = centrality_degree(),
           betweenness = centrality_betweenness(),
@@ -269,94 +308,61 @@ OptimizedLDAAnalyzer <- R6Class(
           eigen = centrality_eigen(),
           centrality_alpha = centrality_alpha()
         )
-      return(self$net_graph)
-    }, 
+      return(self$geno_graph)
+    },
     
-    # New: Create topic-document graph
-    #' Build Topic-Document Graph
+    #' Build Document-Document Network
     #' 
-    #' Creates a bipartite graph connecting documents (genes) to topics with edges weighted by gamma values.
+    #' Creates a network of document (gene) similarities based on their topic distributions
     #' 
-    #' @param gamma_threshold Minimum gamma value for including an edge (default: 0.05)
-    #' @return A tbl_graph object representing the topic-document relationships
+    #' @param similarity_threshold Minimum similarity threshold for including edges (default: 0.1)
+    #' @return A tbl_graph object representing the document-document network
     #' @examples
     #' \dontrun{
-    #' analyzer$build_topic_document_graph(gamma_threshold = 0.1)
+    #' analyzer$build_document_network(similarity_threshold = 0.2)
     #' }
-    build_topic_document_graph = function(gamma_threshold = 0.05) {
+    build_document_network = function(similarity_threshold = 0.1) {
       if (is.null(self$doc_topics)) {
-        stop("Run build_genotype_network() first")
-      }
-      if (is.null(self$terms)) {
-        message("Formatted top terms is empty, creating tibble...")
-        self$get_formatted_top_terms()
+        stop("Run fit_lda() first to generate document-topic distributions")
       }
       
-      all_go_ids <- unique(unlist(strsplit(self$master_df$GO, split = ",\\s*")))
-      all_go_ids <- all_go_ids[!is.na(all_go_ids)]
-      
-      self$go_map <- tryCatch({
-        data.frame(lapply(self$terms, gsub, pattern = "go:", replacement = "GO:")) %>%
-          mutate(
-          TERM = AnnotationDbi::Term(term)
-        ) %>% 
-          group_by(topic) %>%
-          arrange(rank, .by_group = TRUE) %>%
-          slice_head(n = 1) %>%
-          ungroup() %>%
-          mutate(topic = paste0("Topic_", topic))
-      }, error = function(e) {
-        warning("GO term mapping failed: ", e$message)
-        data.frame(GOID = all_go_ids, Term = all_go_ids)
-      })
-      
-      # 1. Create all possible document-topic-genotype combinations
-      self$expanded_edges <- self$doc_topics %>%
+      # Calculate document-document similarities based on topic distributions
+      self$doc_doc_edges <- self$doc_topics %>%
         left_join(
-          self$master_df %>% distinct(Gene, genotype, self$go_corpus_col),
+          self$master_df %>% distinct(Gene, genotype),
           by = c("document" = "Gene")
         ) %>%
-        mutate(
-          full_id = paste(document, genotype),  # Create "cyoA WT" style IDs
-          topic = paste0("Topic_", topic)
-        ) %>%
-        filter(gamma > gamma_threshold) %>%
-        select(from = full_id, to = topic, weight = gamma)#, top_func = func)
+        mutate(full_id = paste(document, genotype),
+               type = "doc_doc") %>%
+        select(full_id, topic, gamma) %>%
+        pairwise_similarity(full_id, topic, gamma, upper = FALSE) %>%
+        filter(similarity > similarity_threshold) %>%
+        rename(from = item1, to = item2, weight = similarity)
       
-      # 2. Prepare document nodes from master_df
-      doc_nodes <- self$master_df %>%
+      # Create document nodes with metadata
+      self$doc_nodes <- self$master_df %>%
         distinct(identity, genotype, log2FoldChange, timepoint, padj, sig_star) %>%
-        dplyr::rename(name = identity, group = genotype)
+        mutate(full_id = paste(identity, genotype)) %>%
+        rename(name = identity, group = genotype)
       
-      # 3. Build graph (corrected)
-      self$topic_doc_graph <- tbl_graph(
-        nodes = bind_rows(
-          doc_nodes %>% mutate(type = "document"),
-          tibble(name = unique(self$expanded_edges$to), 
-                 group = "topic", 
-                 type = "topic",
-                 # Add term mapping - this is the key fix
-                 funcs = ifelse(
-                   name %in% self$go_map$topic,
-                   self$go_map$TERM[match(name, self$go_map$topic)],
-                   NA_character_
-                 )
-          )
-        ),
-        edges = self$expanded_edges
+      # Create the document network graph
+      self$doc_network <- tbl_graph(
+        nodes = self$doc_nodes %>% mutate(type = "document"),
+        edges = self$doc_doc_edges %>%
+          mutate(type = "document_document")
       ) %>%
         mutate(
-          centrality = centrality_degree(),
-          community = group_infomap()
-        ) 
+          centrality = centrality_degree()
+          #community = group_infomap()
+        )
       
       message(sprintf(
-        "Success! Built graph with:\n- %d documents\n- %d topics\n- %d connections",
-        sum(igraph::V(self$topic_doc_graph)$type == "document"),
-        sum(igraph::V(self$topic_doc_graph)$type == "topic"),
-        igraph::ecount(self$topic_doc_graph)
+        "Built document network with:\n- %d documents\n- %d connections",
+        igraph::vcount(self$doc_network),
+        igraph::ecount(self$doc_network)
       ))
-      return(self$topic_doc_graph)
+      
+      return(self$doc_network)
     },
     
     # Modified: Enhanced topic network with genotype connections
@@ -379,7 +385,7 @@ OptimizedLDAAnalyzer <- R6Class(
         filter(similarity > threshold)
       
       # Genotype-genotype edges (using identity column)
-      genotype_edges <- self$master_df %>%
+      self$genotype_edges <- self$master_df %>%
         group_by(genotype) %>%
         summarise(genes = list(unique(identity))) %>%
         pairwise_count(genotype, genes) %>%
@@ -387,15 +393,24 @@ OptimizedLDAAnalyzer <- R6Class(
         mutate(weight = genotype_edge_weight * weight / max(weight))
       
       # Combined graph
-      self$tn_graph <- tbl_graph(
+      self$topic_network <- tbl_graph(
         nodes = tibble(
           name = c(
             paste0("Topic_", unique(c(self$topic_sim$item1, self$topic_sim$item2))),
-            unique(c(genotype_edges$from, genotype_edges$to))
+            unique(c(self$genotype_edges$from, self$genotype_edges$to))
+          ),
+          group = c(
+            rep("topic", length(unique(c(self$topic_sim$item1, self$topic_sim$item2)))),
+            rep("genotype", length(unique(c(self$genotype_edges$from, self$genotype_edges$to))))
           ),
           type = c(
             rep("topic", length(unique(c(self$topic_sim$item1, self$topic_sim$item2)))),
-            rep("genotype", length(unique(c(genotype_edges$from, genotype_edges$to))))
+            rep("genotype", length(unique(c(self$genotype_edges$from, self$genotype_edges$to))))
+          ),
+          funcs = ifelse(
+            name %in% self$go_map$topic,
+            self$go_map$TERM[match(name, self$go_map$topic)],
+            NA_character_
           )
         ),
         edges = bind_rows(
@@ -403,18 +418,162 @@ OptimizedLDAAnalyzer <- R6Class(
             dplyr::rename(from = item1, to = item2, weight = similarity) %>%
             mutate(
               from = paste0("Topic_", from),
-              to = paste0("Topic_", to)
+              to = paste0("Topic_", to),
+              type = "topic_topic"
             ),
-          genotype_edges
+          self$genotype_edges
         )
       ) %>%
         mutate(degree = centrality_degree(),
-          betweenness = centrality_betweenness(),
-          centrality_alpha = centrality_alpha())
+               betweenness = centrality_betweenness(),
+               centrality_alpha = centrality_alpha())
       
-      return(self$tn_graph)
+      return(self$topic_network)
     },
 
+    # New: Create topic-document graph
+    #' Build Topic-Document Graph
+    #' 
+    #' Creates a bipartite graph connecting documents (genes) to topics with edges weighted by gamma values.
+    #' 
+    #' @param gamma_threshold Minimum gamma value for including an edge (default: 0.05)
+    #' @return A tbl_graph object representing the topic-document relationships
+    #' @examples
+    #' \dontrun{
+    #' analyzer$build_topic_document_graph(gamma_threshold = 0.1)
+    #' }
+    build_topic_document_network = function(gamma_threshold = 0.05) {
+      if (is.null(self$doc_topics)) {
+        stop("Run build_genotype_network() first")
+      }
+      
+      if (is.null(self$go_map)) {
+        message("GO map not found, creating...")
+        self$build_go_map()
+      }
+      
+      # 1. Create all possible document-topic-genotype combinations
+      self$expanded_edges <- self$doc_topics %>%
+        left_join(
+          self$master_df %>% distinct(Gene, genotype, self$go_corpus_col),
+          by = c("document" = "Gene")
+        ) %>%
+        mutate(
+          full_id = paste(document, genotype),  # Create "cyoA WT" style IDs
+          topic = paste0("Topic_", topic)
+        ) %>%
+        filter(gamma > gamma_threshold) %>%
+        select(from = full_id, to = topic, weight = gamma)#, top_func = func)
+      
+      # 2. Prepare document nodes from master_df
+      doc_nodes <- self$master_df %>%
+        distinct(identity, genotype, log2FoldChange, timepoint, padj, sig_star) %>%
+        dplyr::rename(name = identity, group = genotype)
+      
+      # 3. Build graph (corrected)
+      self$topic_doc_network <- tbl_graph(
+        nodes = bind_rows(
+          doc_nodes %>% mutate(type = "document"),
+          tibble(name = unique(self$expanded_edges$to), 
+                 group = "topic", 
+                 type = "topic",
+                 # Add term mapping - this is the key fix
+                 funcs = ifelse(
+                   name %in% self$go_map$topic,
+                   self$go_map$TERM[match(name, self$go_map$topic)],
+                   NA_character_
+                 )
+          )
+        ),
+        edges = self$expanded_edges %>%
+          mutate(type = "topic_document")
+      ) %>%
+        mutate(
+          centrality = centrality_degree(),
+          community = group_infomap()
+        ) 
+      
+      message(sprintf(
+        "Success! Built graph with:\n- %d documents\n- %d topics\n- %d connections",
+        sum(igraph::V(self$topic_doc_network)$type == "document"),
+        sum(igraph::V(self$topic_doc_network)$type == "topic"),
+        igraph::ecount(self$topic_doc_network)
+      ))
+      return(self$topic_doc_network)
+    },
+    
+    #' Combine Networks
+    #' 
+    #' Merges topic-document, document-document, and topic-term networks into a single graph
+    #' 
+    #' @return A combined tbl_graph object
+    #' @examples
+    #' \dontrun{
+    #' combined <- analyzer$combine_networks()
+    #' }
+    combine_networks = function() {
+      # Ensure all required networks are built
+      if (is.null(self$topic_doc_network)) {
+        self$build_topic_document_network()
+      }
+      if (is.null(self$doc_network)) {
+        self$build_document_network()
+      }
+      if (is.null(self$topic_network)) {
+        self$build_topic_network()
+      }
+      
+      # Get all graphs
+      topic_doc_graph <- self$topic_doc_network
+      doc_doc_graph <- self$doc_network
+      topic_graph <- self$topic_network
+      
+      # Rename edges (to or to and from) for clarity.
+      topic_doc_graph <- topic_doc_graph %>%
+        activate(edges) %>%
+        rename(to = to, from = from)
+      
+      # First combine document networks
+      combined_docs <- graph_join(topic_doc_graph, doc_doc_graph)
+      
+      # Then combine with term network
+      self$combined_network <- graph_join(combined_docs, topic_graph)
+      
+      # Add edge types
+      self$combined_network <- self$combined_network %>%
+        activate(edges) %>%
+        mutate(
+          edge_color = case_when(
+            type == "topic_document" ~ "blue",
+            type == "document_document" ~ "gray",
+            type == "topic_topic" ~ "red",
+            TRUE ~ "black"
+          )
+        ) %>%
+        activate(nodes) %>%
+        mutate(
+          node_type = case_when(
+            type == "document" ~ "document",
+            type == "topic" ~ "topic",
+            TRUE ~ "other"
+          ),
+          node_size = case_when(
+            node_type == "document" ~ 2,
+            node_type == "topic" ~ 5,
+            node_type == "term" ~ 2,
+            TRUE ~ 1
+          )
+        )
+      
+      message(sprintf(
+        "Successfully combined networks with:\n- %d nodes\n- %d edges",
+        igraph::vcount(self$combined_network),
+        igraph::ecount(self$combined_network)
+      ))
+      
+      return(self$combined_network)
+    },
+    
     # Visualization for topic-document graph
     #' Plot Topic-Document Graph
     #' 
@@ -427,13 +586,13 @@ OptimizedLDAAnalyzer <- R6Class(
     #' analyzer$plot_topic_document_graph(label_threshold = 0.7)
     #' }
     plot_topic_document_graph = function(label_threshold = 0.5) {
-      if (is.null(self$topic_doc_graph)) {
+      if (is.null(self$topic_doc_network)) {
         stop("Run build_topic_document_graph() first")
       }
       
-      ggraph(self$topic_doc_graph %>% activate(edges) %>% filter(weight > 0), 
-             layout = "fr", weights = weight) +
-        geom_edge_link(aes(alpha = weight, length = weight), width = 0.1, color = "gray50") +
+      ggraph(self$topic_doc_network %>% activate(edges) %>% filter(weight > 0), 
+             layout = "kk", weights = weight) +
+        geom_edge_link(aes(alpha = weight), width = 0.1, color = "gray50") +
         geom_node_point(aes(color = group, size = ifelse(type == "topic", 5, 3))) +
         geom_node_label(
           aes(label = ifelse(type == "topic" | centrality > label_threshold, funcs, "")), 
@@ -453,50 +612,88 @@ OptimizedLDAAnalyzer <- R6Class(
     #' \dontrun{
     #' analyzer$plot_enhanced_topic_network()
     #' }
-    plot_enhanced_topic_network = function() {
-      if (is.null(self$tn_graph)) {
+    plot_topic_graph = function() {
+      if (is.null(self$topic_network)) {
         stop("Run build_topic_network() first")
       }
       
-      ggraph(self$tn_graph, layout = "fr") +
+      ggraph(self$topic_network, layout = "fr") +
         geom_edge_link(aes(alpha = weight, color = ifelse(is.na(similarity), "genotype", "topic"))) +
         geom_node_point(aes(size = degree, color = type)) +
-        geom_node_label(aes(label = ifelse(degree > median(degree), name, "")), repel = TRUE) +
+        geom_node_label(aes(label = ifelse(degree > median(degree), funcs, "")), repel = TRUE) +
         scale_color_manual(values = c("topic" = "red", "genotype" = "blue")) +
         theme_graph()
     },
     
-    #' Combine Networks
-    #' 
-    #' Merges topic-document and topic-term networks into a single graph.
-    #' 
-    #' @param analyzer Another OptimizedLDAAnalyzer instance to combine with
-    #' @return A combined tbl_graph object
-    #' @examples
-    #' \dontrun{
-    #' combined <- analyzer1$combine_networks(analyzer2)
-    #' }
-    combine_networks = function() {
-      # Get both graphs
+    plot_multiplex_graph = function(gamma_threshold = 0.1, similarity_threshold = 0.01) {
+      # Prepare both edge types
+      self$doc_topic_edges <- self$doc_topics %>%
+        filter(gamma > gamma_threshold) %>%
+        mutate(from = paste(document, genotype),  # Match your composite IDs
+               to = paste0("Topic_", topic),
+               type = "doc_topic")
       
-      doc_graph <- self$topic_doc_graph
-      term_graph <- self$tn_graph
+      self$term_term_edges <- self$topic_sim %>%
+        filter(similarity > similarity_threshold) %>%
+        mutate(from = paste0("TERM_", item1),
+               to = paste0("TERM_", item2),
+               type = "term_term")
       
-      # Rename term graph nodes to avoid conflicts
-      term_graph <- term_graph %>%
-        activate(nodes) %>%
-        mutate(name = paste0("TERM_", name))  # Prefix term names
+      self$multiplex_nodes <- bind_rows(
+        self$master_df %>%
+          distinct(identity, genotype) %>%
+          rename(name = identity, group = genotype) %>%
+          mutate(type = "document"),
+        
+        tibble(name = paste0("Topic_", unique(self$doc_topic_edges$topic)), 
+               group = "topic", 
+               type = "topic"),
+        
+        tibble(name = unique(c(self$term_term_edges$from,
+                               self$term_term_edges$to)),
+               group = "term", 
+               type = "term")
+      )
       
-      # Combine graphs
-      combined_graph <- graph_join(doc_graph, term_graph)
+      self$multiplex_edges <- bind_rows(
+        self$doc_topic_edges %>% select(from, to, weight = gamma, type),
+        self$term_term_edges %>% select(from, to, weight = similarity, type)
+      )
       
-      # Optional: Add edges between topics in both graphs
-      topic_links <- analyzer$doc_topics %>%
-        group_by(topic) %>%
-        summarise(mean_gamma = mean(gamma)) %>%
-        left_join(analyzer$topic_sim, by = c("topic" = "item1"))
+      # Create unified graph
+      self$multiplex_network <- tbl_graph(
+        nodes = self$multiplex_nodes,
+        edges = self$multiplex_edges,
+        directed = FALSE
+      )
+    
       
-      return(combined_graph)
+      # Plot with distinct edge styles
+       # multiplex_graph <- ggraph(self$multiplex_network, layout = "fr") +
+       #   geom_edge_link(
+       #     aes(filter = type == "doc_topic", 
+       #         alpha = weight, 
+       #         color = "Document-Topic"),
+       #     width = 0.8
+       #   ) +
+       #   geom_edge_link(
+       #     aes(filter = type == "term_term", 
+       #         alpha = weight,
+       #         color = "Term-Term"),
+       #     width = 0.5,
+       #     linetype = "dashed"
+       #   ) +
+       #   geom_node_point(
+       #     aes(color = group, size = ifelse(type == "term", 2, 4))
+       #   ) +
+       #   scale_edge_color_manual(
+       #     name = "Edge Type",
+       #     values = c("Document-Topic" = "darkblue", "Term-Term" = "firebrick")
+       #   ) +
+       #   theme_graph() +
+       #   labs(title = "Multiplex Network: Documents, Topics, and Terms")
+      
+      return(multiplex_network)
     }
   ),
     

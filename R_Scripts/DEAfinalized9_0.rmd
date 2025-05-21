@@ -46,7 +46,7 @@ select <- function(...){ dplyr::select(...)}
 # List all of the quant.sf files
 cwd <- getwd()
 par_dir <- dirname(cwd)
-quant_fp <- paste(cwd, 'quants', sep = '/')
+quant_fp <- paste(par_dir, 'quants', sep = '/')
 quant_files<- list.files(path = quant_fp, pattern = "quant.sf$", recursive = TRUE)
 ```
 
@@ -1632,27 +1632,103 @@ analyzer$master_df
 analyzer$go_corpus_col
 analyzer$get_valid_go()
 analyzer$prepare_dtm()
-dtm <- analyzer$dtm
 analyzer$find_optimal_k()
-k <- analyzer$optimal_k
 analyzer$fit_lda()
-lda_model <- analyzer$lda_model
 analyzer$build_genotype_network()
-top_doc_network <- analyzer$build_topic_document_graph(gamma_threshold = 0.1)
-topic_network <- analyzer$build_topic_network()
+analyzer$build_topic_network()
+analyzer$build_topic_document_network()
 analyzer$plot_topic_document_graph()
-analyzer$plot_enhanced_topic_network()
-combined_network <- analyzer$combine_networks()`
+analyzer$plot_topic_graph()
 ```
 ```{r}
-analyzer$doc_topics
+dtm <- analyzer$dtm
+k <- analyzer$optimal_k
+lda_model <- analyzer$lda_model
+
+top_doc_network <- analyzer$build_topic_document_network(gamma_threshold = 0.1)
+topic_network <- analyzer$build_topic_network()
+doc_doc_network <- analyzer$build_document_network()
+combined_network <- analyzer$combine_networks()
+
+top_doc_nodes <- top_doc_network %>%
+  activate(nodes) %>%
+  as_tibble()
+top_doc_edges <- top_doc_network %>%
+  activate(edges) %>%
+  as_tibble()
+doc_doc_nodes <- doc_doc_network %>%
+  activate(nodes) %>%
+  as_tibble()
+doc_doc_edges <- doc_doc_network %>%
+  activate(edges) %>%
+  as_tibble()
+top_top_nodes <- topic_network %>%
+  activate(nodes) %>%
+  as_tibble()
+top_top_edges <- topic_network %>%
+  activate(edges) %>%
+  as_tibble()
+combined_network_nodes <- combined_network%>%
+  activate(nodes) %>%
+  as_tibble()
+combined_network_edges <- combined_network %>%
+  activate(edges) %>%
+  as_tibble()
 ```
 ```{r}
-analyzer$go_map
-analyzer$topic_doc_graph
+nodes = analyzer$doc_nodes
+edges = analyzer$doc_doc_edges
+
+setdiff(unique(c(edges$from, edges$to)), nodes$identity)
+```
+```{r}
+ggraph(combined_network, layout = "fr") +
+  geom_edge_link(aes(alpha = weight, color = edge_type)) +
+  geom_node_point(aes(color = node_type, size = node_size)) +
+  theme_graph()
 ```
 
 ```{r}
+ggraph(combined_network, layout = "fr") +
+  geom_edge_link(
+    aes(filter = type == "topic_document", 
+        alpha = weight,
+        color = "Document-Topic"),
+    width = 0.8
+  ) +
+  geom_edge_link(
+    aes(filter = type == "document_document", 
+        alpha = weight,
+        
+        color = "Document-Document"),
+    width = 0.1,
+    linetype = "dashed"
+  ) +
+  geom_node_point(
+    aes(color = group, size = ifelse(type == "term", 2, 4))
+  ) +
+  scale_edge_color_manual(
+    name = "Edge Type",
+    values = c("Document-Topic" = "darkblue", "Term-Term" = "firebrick")
+  ) +
+  theme_graph() +
+  labs(title = "Multiplex Network: Documents, Topics, and Terms")
+```
+
+```{r}
+setdiff(unique(c(edges$from, edges$to)), nodes$name)
+```
+
+```{r}
+analyzer$doc_topic_edges
+```
+```{r}
+analyzer$term_term_edges
+```
+
+```{r}
+combined_network
+topic_network
 top_doc_network
 ```
 

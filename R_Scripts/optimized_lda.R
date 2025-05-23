@@ -18,6 +18,7 @@ library(future)
 library(furrr)
 library(ggraph)
 library(igraph)
+library(tidygraph)
 library(tm)
 library(AnnotationDbi)
 library(org.EcK12.eg.db)
@@ -26,7 +27,9 @@ library(widyr)
 OptimizedLDAAnalyzer <- R6Class(
   "OptimizedLDAAnalyzer",
   public = list(
+    combined_edges = NULL,
     combined_network = NULL,
+    combined_nodes = NULL,
     doc_doc_edges = NULL,
     doc_network = NULL,
     doc_network_edges = NULL,
@@ -43,6 +46,7 @@ OptimizedLDAAnalyzer <- R6Class(
     go_corpus_col = NULL,
     go_map = NULL,
     k_metrics = NULL,
+    layout = NULL,
     lda_model = NULL,
     master_df = NULL,
     multiplex_edges = NULL,
@@ -50,6 +54,7 @@ OptimizedLDAAnalyzer <- R6Class(
     multiplex_nodes = NULL,
     geno_graph = NULL,
     optimal_k = NULL,
+    organized_graph = NULL,
     terms = NULL,
     term_term_edges = NULL,
     topic_network = NULL,
@@ -60,6 +65,7 @@ OptimizedLDAAnalyzer <- R6Class(
     topic_labels = NULL,
     topic_sim = NULL,
     topic_terms = NULL,
+    dd_tt_graph = NULL,
 
     # Constructor with input validation
     #' @description 
@@ -301,12 +307,10 @@ OptimizedLDAAnalyzer <- R6Class(
       )
       self$geno_graph <- self$geno_graph %>%
         mutate(
-          degree = centrality_degree(),
           betweenness = centrality_betweenness(),
-          #closeness = centrality_closeness(),
-          page_rank = centrality_pagerank(),
-          eigen = centrality_eigen(),
-          centrality_alpha = centrality_alpha()
+          alpha = centrality_alpha(),
+          degree = centrality_degree(),
+          closeness = centrality_closeness()
         )
       return(self$geno_graph)
     },
@@ -342,7 +346,6 @@ OptimizedLDAAnalyzer <- R6Class(
       # Create document nodes with metadata
       self$doc_nodes <- self$master_df %>%
         distinct(identity, genotype, log2FoldChange, timepoint, padj, sig_star) %>%
-        mutate(full_id = paste(identity, genotype)) %>%
         rename(name = identity, group = genotype)
       
       # Create the document network graph
@@ -352,8 +355,11 @@ OptimizedLDAAnalyzer <- R6Class(
           mutate(type = "document_document")
       ) %>%
         mutate(
-          centrality = centrality_degree()
-          #community = group_infomap()
+          funcs = NA,
+          betweenness = centrality_betweenness(),
+          alpha = centrality_alpha(),
+          degree = centrality_degree(),
+          closeness = centrality_closeness()
         )
       
       message(sprintf(
@@ -412,7 +418,17 @@ OptimizedLDAAnalyzer <- R6Class(
             self$go_map$TERM[match(name, self$go_map$topic)],
             NA_character_
           )
-        ),
+        ) %>%
+          mutate(
+            log2FoldChange = NA,
+            timepoint = NA,
+            padj = NA,
+            sig_star = NA,
+            betweenness = NA,
+            alpha = NA,
+            degree = NA,
+            closeness = 0
+          ),
         edges = bind_rows(
           self$topic_sim %>% 
             dplyr::rename(from = item1, to = item2, weight = similarity) %>%
@@ -424,9 +440,12 @@ OptimizedLDAAnalyzer <- R6Class(
           self$genotype_edges
         )
       ) %>%
-        mutate(degree = centrality_degree(),
-               betweenness = centrality_betweenness(),
-               centrality_alpha = centrality_alpha())
+        mutate(          
+            betweenness = centrality_betweenness(),
+            alpha = centrality_alpha(),
+            degree = centrality_degree(),
+            closeness = centrality_closeness()
+            )
       
       return(self$topic_network)
     },
@@ -489,8 +508,11 @@ OptimizedLDAAnalyzer <- R6Class(
           mutate(type = "topic_document")
       ) %>%
         mutate(
-          centrality = centrality_degree(),
-          community = group_infomap()
+          funcs = NA,
+          betweenness = centrality_betweenness(),
+          alpha = centrality_alpha(),
+          degree = centrality_degree(),
+          closeness = centrality_closeness(),
         ) 
       
       message(sprintf(
@@ -511,7 +533,13 @@ OptimizedLDAAnalyzer <- R6Class(
     #' \dontrun{
     #' combined <- analyzer$combine_networks()
     #' }
-    combine_networks = function() {
+    combine_networks = function(gamma_threshold = 0.0, 
+                                betweenness_threshold = 0.0,
+                                closeness_threshold = 0.0,
+                                degree_threshold = 0.0,
+                                alpha_threshold = 0.0,
+                                timepoint_filter = 0,
+                                dd_gamma_threshold = 0.0) {
       # Ensure all required networks are built
       if (is.null(self$topic_doc_network)) {
         self$build_topic_document_network()
@@ -525,33 +553,39 @@ OptimizedLDAAnalyzer <- R6Class(
       
       # Get all graphs
       topic_doc_graph <- self$topic_doc_network
-      doc_doc_graph <- self$doc_network
+      doc_doc_graph <- self$doc_network %>%
+        activate(edges) %>%
+        filter(weight > dd_gamma_threshold)
       topic_graph <- self$topic_network
+      join_across = c("name", "group", "log2FoldChange", "timepoint", "padj", "sig_star", "type", "funcs",
+                      "betweenness", "alpha", "degree", "closeness")
       
-      # Rename edges (to or to and from) for clarity.
-      topic_doc_graph <- topic_doc_graph %>%
+      self$combined_network<- doc_doc_graph %>%
+        graph_join(topic_graph, by = join_across) %>% 
+        bind_edges(topic_doc_graph %>%
+                     activate(edges) %>% 
+                     as_tibble()
+        ) %>%
         activate(edges) %>%
-        rename(to = to, from = from)
-      
-      # First combine document networks
-      combined_docs <- graph_join(topic_doc_graph, doc_doc_graph)
-      
-      # Then combine with term network
-      self$combined_network <- graph_join(combined_docs, topic_graph)
-      
-      # Add edge types
-      self$combined_network <- self$combined_network %>%
-        activate(edges) %>%
+        distinct(from, to, .keep_all = TRUE) %>% # .N() asses current node
+        filter(weight > gamma_threshold) %>%
         mutate(
           edge_color = case_when(
-            type == "topic_document" ~ "blue",
-            type == "document_document" ~ "gray",
-            type == "topic_topic" ~ "red",
-            TRUE ~ "black"
+          type == "topic_document" ~ "blue",
+          type == "document_document" ~ "gray",
+          type == "topic_topic" ~ "red",
+          TRUE ~ "black"
           )
         ) %>%
         activate(nodes) %>%
+        #distinct(name, .keep_all = TRUE) %>%
+        #filter(betweenness >= betweenness_threshold) %>%
+        #filter(closeness >= closeness_threshold) %>%
+        #filter(degree >= degree_threshold) %>%
+        #filter(timepoint != timepoint_filter) %>%
+        #filter(alpha >= alpha_threshold) %>%
         mutate(
+          name = ifelse(str_detect(name, "^Topic"), name, str_sub(name, end = -4)),
           node_type = case_when(
             type == "document" ~ "document",
             type == "topic" ~ "topic",
@@ -563,7 +597,8 @@ OptimizedLDAAnalyzer <- R6Class(
             node_type == "term" ~ 2,
             TRUE ~ 1
           )
-        )
+        ) %>%
+        filter(!node_is_isolated())
       
       message(sprintf(
         "Successfully combined networks with:\n- %d nodes\n- %d edges",
@@ -573,7 +608,34 @@ OptimizedLDAAnalyzer <- R6Class(
       
       return(self$combined_network)
     },
-    
+   
+    organize_nodes = function(layout = "fr",
+                              group_by = "type",
+                              centrality_measure = "degree",
+                              circular = FALSE) {
+      
+      # Calculate centrality and groups in the graph object
+      self$organized_graph <- self$combined_network %>%
+        activate(nodes) %>%
+        mutate(
+          centrality = !!sym(centrality_measure),
+          group_by = !!sym(group_by)
+        ) %>%
+        activate(edges) %>%  # Make sure edges are activated for weight
+        mutate(weight = weight) %>%  # Assuming weight already exists in edges
+       arrange(group_by)
+      
+      # Create layout (separately)
+      self$layout <- ggraph::create_layout(
+        graph = self$organized_graph,
+        layout = layout,
+        circular = circular
+      )
+      
+      return(self$layout)  # Return the layout object for plotting
+      invisible(self)
+    },
+     
     # Visualization for topic-document graph
     #' Plot Topic-Document Graph
     #' 
@@ -595,7 +657,7 @@ OptimizedLDAAnalyzer <- R6Class(
         geom_edge_link(aes(alpha = weight), width = 0.1, color = "gray50") +
         geom_node_point(aes(color = group, size = ifelse(type == "topic", 5, 3))) +
         geom_node_label(
-          aes(label = ifelse(type == "topic" | centrality > label_threshold, funcs, "")), 
+          aes(label = ifelse(type == "topic" |  degree > label_threshold, funcs, "")), 
           repel = TRUE
         ) +
         theme_graph() +

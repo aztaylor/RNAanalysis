@@ -1626,6 +1626,12 @@ analyzer <- OptimizedLDAAnalyzer$new(
 ```
 
 ```{r}
+source("optimized_lda.R")
+# Initialize analyzer with validation
+analyzer <- OptimizedLDAAnalyzer$new(
+  master_df = Master_df,
+  go_corpus_col = "GO"  # Column containing GO terms
+)
 # Debug
 analyzer$validate()
 analyzer$master_df
@@ -1648,7 +1654,11 @@ lda_model <- analyzer$lda_model
 top_doc_network <- analyzer$build_topic_document_network(gamma_threshold = 0.1)
 topic_network <- analyzer$build_topic_network()
 doc_doc_network <- analyzer$build_document_network()
-combined_network <- analyzer$combine_networks()
+combined_network <- analyzer$combine_networks(gamma_threshold = 0.15,
+                                              dd_gamma_threshold = 0.99)
+
+
+#organized_layout <- analyzer$organize_nodes()
 
 top_doc_nodes <- top_doc_network %>%
   activate(nodes) %>%
@@ -1674,45 +1684,62 @@ combined_network_nodes <- combined_network%>%
 combined_network_edges <- combined_network %>%
   activate(edges) %>%
   as_tibble()
-```
-```{r}
-nodes = analyzer$doc_nodes
-edges = analyzer$doc_doc_edges
+combined_graph_edges <- combined_graph %>%
+  activate(edges) %>%
+  as_tibble()
+combined_graph_nodes <- combined_graph %>%
+  activate(nodes) %>%
+  as_tibble()
 
-setdiff(unique(c(edges$from, edges$to)), nodes$identity)
-```
-```{r}
-ggraph(combined_network, layout = "fr") +
-  geom_edge_link(aes(alpha = weight, color = edge_type)) +
-  geom_node_point(aes(color = node_type, size = node_size)) +
-  theme_graph()
-```
+ggraph(organized_layout) +
+  geom_edge_link(aes(alpha = weight, width = weight, color = edge_color),
+                 show.legend = FALSE) +
+  geom_node_point(aes(color = log2FoldChange, shape = group)) +
+  scale_edge_alpha(range = c(0.1, 0.5)) +
+  scale_edge_width(range = c(0.2, 1.5)) +
+  theme_graph() +
+  labs(size = "Centrality", color = "Group") +
+  guides(edge_alpha = "none", edge_width = "none")
 
-```{r}
-ggraph(combined_network, layout = "fr") +
+
+ggraph(combined_network, layout = "kk") +
   geom_edge_link(
-    aes(filter = type == "topic_document", 
+    aes(filter = type == "document_document",
         alpha = weight,
-        color = "Document-Topic"),
-    width = 0.8
+        color = "Document-Document"),
+    width = 0.5
   ) +
   geom_edge_link(
-    aes(filter = type == "document_document", 
-        alpha = weight,
-        
-        color = "Document-Document"),
-    width = 0.1,
+    aes(filter = type == "topic_document",
+        alpha = weight*5,
+        color = "Document-Topic"),
+    width = 0.9,
     linetype = "dashed"
   ) +
+  geom_edge_link(
+    aes(filter = type == "te",
+        alpha = weight,
+        color = "Topic-Topic"),
+    width = 0.9
+  ) +
   geom_node_point(
-    aes(color = group, size = ifelse(type == "term", 2, 4))
+    aes(color = `group`, size = ifelse(type == "document", 2, alpha))
   ) +
   scale_edge_color_manual(
     name = "Edge Type",
-    values = c("Document-Topic" = "darkblue", "Term-Term" = "firebrick")
+    values = c("Document-Document" = "darkblue", "Topic-Topic" = "firebrick", 
+               "Document-Topic" = "darkgreen")
   ) +
   theme_graph() +
   labs(title = "Multiplex Network: Documents, Topics, and Terms")
+```
+
+```{r}
+combined_es <- analyzer$combined_edges
+```
+
+```{r}
+
 ```
 
 ```{r}

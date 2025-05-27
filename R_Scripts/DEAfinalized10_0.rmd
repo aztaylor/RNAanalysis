@@ -403,12 +403,13 @@ divergence_data <- heatmap_data %>%
   # Calculate divergence metrics
   mutate(
     s4_vs_WT = `s4` - `WT`,  # Absolute difference from WT baseline
-    s4_vs_NC = `NC` - `WT`,  # Absolute difference from NC control
-    combined_divergence = abs(s4_vs_WT - s4_vs_NC)  # Total divergence score
+    NC_vs_WT = `NC` - `WT`,  # Absolute difference from NC control
+    s4_vs_NC = `s4` - `NC`,  # Absolute difference from NC baseline
+    combined_divergence = abs(s4_vs_WT - NC_vs_WT)  # Total divergence score
   ) %>%
-  arrange(desc(combined_divergence)) # Sort by highest divergence
+  arrange(desc(s4_vs_NC)) # Sort by highest divergence
 
-# Result contains:
+# Result contain:
 # Gene | WT | NC | s4 | s4_vs_WT | s4_vs_NC | combined_divergence
 
 # Sort data base of the divergence data order.
@@ -435,8 +436,13 @@ wt_baseline <- heatmap_data_sorted %>%
         Gene %in% gene_order) %>%
   dplyr::select(Gene, treatment, timepoint, wt_l2fc = log2FoldChange)
 
+nc_baseline <- heatmap_data_sorted %>%
+  filter(genotype == "NC",
+        Gene %in% gene_order) %>%
+  dplyr::select(Gene, treatment, timepoint, nc_l2fc = log2FoldChange)
+
 # 2. Create relative fold changes (s4-WT and NC-WT)
-heatmap_relative <- heatmap_data_sorted %>%
+heatmap_relative_wt<- heatmap_data_sorted %>%
   filter(genotype %in% c("NC", "s4")) %>%  # Exclude WT
   inner_join(wt_baseline, by = c("Gene", "treatment", "timepoint")) %>%
   mutate(
@@ -448,7 +454,7 @@ heatmap_relative <- heatmap_data_sorted %>%
   dplyr::rename(`log2FoldChange` = `relative_l2fc`)  # Rename for consistency
 
 # 3. (Optional) Combine with other annotations
-heatmap_relative <- heatmap_relative %>%
+heatmap_relative_wt<- heatmap_relative_wt%>%
   left_join(
     heatmap_data %>% select(Gene, genotype, sig_star),  # Keep significance stars
     by = c("Gene", "genotype")
@@ -476,16 +482,35 @@ ggplot(heatmap_data_sorted, aes(
   )
 ```
 # Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
-```{r, fig.width=5, fig.height=10}
-ggplot(heatmap_relative, aes(
+```{r, fig.width=20, fig.height=10}
+heatmap_relative_nc <- heatmap_data_sorted %>%
+  filter(genotype == "s4") %>%  # Only NC
+  inner_join(nc_baseline, by = c("Gene", "treatment", "timepoint")) %>%
+  mutate(
+    relative_l2fc = log2FoldChange - nc_l2fc,  # Calculate difference from NC
+    genotype = paste0(genotype, "-NC"),  # Update genotype labels
+    Gene = factor(Gene, levels = gene_order, exclude=NULL)  # Ensure consistent ordering
+  ) %>%
+  select(-log2FoldChange, -nc_l2fc) %>%# Remove original columns
+  dplyr::rename(`log2FoldChange` = `relative_l2fc`)  # Sort by absolute log2FoldChange
+
+heatmap_relative_nc <- heatmap_relative_nc %>%
+  left_join(
+    heatmap_data %>% select(Gene, genotype, sig_star),  # Keep significance stars
+    by = c("Gene", "genotype")
+  ) %>%
+  arrange(abs(log2FoldChange), .by_group = TRUE)
+
+heatmap_relative_nc$Gene <- factor(heatmap_relative_nc$Gene, levels = heatmap_relative_nc$Gene)
+s4_vs_NC_heatmap <- ggplot(heatmap_relative_nc, aes(
     x = interaction(genotype, treatment, timepoint, sep = " ", lex.order = TRUE),
     y = fct_rev(Gene))
 ) +
   scale_y_discrete(limits = rev(top_n_genes)) +
-  geom_tile(aes(fill = log2FoldChange)) +
+  geom_tile(aes(fill = log2FoldChange, height= 0.9)) +
   #facet_grid(~ timepoint, scales = "free_x") +
   scale_fill_gradient2(
-    low = "darkblue",  high = "darkred"
+    low = "blue", mid = "white",  high = "red"
     #limits = c(-20, 20)  # Adjust based on your data
   ) +
   theme(
@@ -496,8 +521,41 @@ ggplot(heatmap_relative, aes(
     x = "Strain + IPTG",
     y = "Gene",
     fill = expression(atop(log[2],"Fold Change"))
-
   )
+
+s4_vs_NC_barchart <- ggplot(heatmap_relative_nc, aes(
+    x = Gene,
+    y = log2FoldChange
+  )) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle=90, family=font, size=fsize)) +
+  scale_fill_gradient2(
+    low = "blue", mid = "grey", high = "red",
+    limits = c(-20, 20)) +  # Adjust based on your data ) +
+  labs(
+    x = "Gene",
+    y = expression(log[2]~" Fold Change"),
+    title = "Relative Fold Changes (s4 vs NC)"
+  ) 
+
+s4_vs_NC_histogram <- ggplot(heatmap_relative_nc, aes(x = log2FoldChange)) +
+  geom_histogram(bins = 25, fill = "blue", color = "black", alpha = 0.7) +
+  labs(
+    x = expression(log[2]~" Fold Change"),
+    y = "Frequency",
+    title = "Distribution of Relative Fold Changes (s4 vs NC)"
+  ) 
+
+lay <- rbind(c(1, 2),
+             c(1, 3))
+grid <- grid.arrange(
+  s4_vs_NC_heatmap,
+  s4_vs_NC_barchart,
+  s4_vs_NC_histogram,
+  ncol = 2,
+  layout_matrix = lay 
+)
 
 ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/Heatmap_5hr.png",
       p,
@@ -628,7 +686,8 @@ nor_top_hits <- ggplot(varNor_l2f_df, aes(x=colname, y=rowname, fill=value)) +
   #scale_x_discrete(labels = columns) +
   xlab("Treatment") +
   ylab("Gene")+
-  labs(fill=expression(atop(log[2],"Fold Change")) )
+  labs(fill=expression(atop(log[2],"Fold Change")),
+       title = "Relative Fold Changes (Norfloxacin)")
 print(nor_top_hits)
 ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures//NorTopHits.png", nor_top_hits, dpi=600)
 ```
@@ -677,10 +736,23 @@ trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) +
   coord_cartesian(clip = "off") +
   xlab("Treatment") +
   ylab("Gene")+
-  labs(fill=expression(atop(log[2],"Fold Change"))
-)
+  labs(fill=expression(atop(log[2],"Fold Change")),
+       title = "Comparison of Relative Fold Changes (dCasRx vs Norfloxacin)"
+  )
 print(trt_comp)
 ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
+```
+```{r, fig.width=20, fig.height=10}
+lay <- rbind(c(1, 3),
+             c(2, 4))
+grid <- grid.arrange(
+  s4_vs_NC_barchart,
+  s4_vs_NC_histogram,
+  nor_top_hits,
+  trt_comp,
+  ncol = 2,
+  layout_matrix = lay 
+)
 ```
 # Pull the gene functions from Uniprot.
 ```{r}
@@ -1427,7 +1499,7 @@ rcfc_network_edges <- rcfc_network %>%
   as_tibble()
 
 topic_size <- 5 #`alpha`
-ggraph(rcc_network, layout = "kk") + #, pivots = 10) + #, weight = weight) +#, group = "community") + #, circular=TRUE) +
+ggraph(rcc_network, layout = "drl") + #, pivots = 10) + #, weight = weight) +#, group = "community") + #, circular=TRUE) +
   geom_edge_link(
     aes(filter = type == "document_document",
         alpha = weight*0.2,

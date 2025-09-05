@@ -1,0 +1,21 @@
+,"SOS responsive, LexA-dependent genes",LexA-independent genes,Anaerobic induction,Starvation induction,Other regulation,Transcription-related genes,Translation-related genes,Hypothetical or unknown function genes
+0,polB,dnaA,cydA,cstA,deoA,fliA,fusA,yabO
+1,recA,nrdA,tdcB,sspA,deoB,fliZ,infA,yagP
+2,recN,nrdB,tdcC,sspB,deoC,greA,rnpA,ychB
+3,sbmC,cydA,,,dnaG,rho,rpmB,ydiY
+4,ssb,tdcB,,,gmk,rpoA,rpmG,yebE
+5,sulA,tdcC,,,gyrA,rpoD,rpmH,yebF
+6,uvrA,cstA,,,gyrB,,rpsG,yeeN
+7,uvrB,sspA,,,intZ,,rpsU,yfgB
+8,,sspB,,,mcrB,,trmD,yfhN
+9,,deoA,,,oraA,,,yfhO
+10,,deoB,,,pyrG,,,yghB
+11,,deoC,,,,,,yhjG
+12,,dnaG,,,,,,yi52–10
+13,,gmk,,,,,,yibB
+14,,gyrA,,,,,,yjeS
+15,,gyrB,,,,,,ylaC
+16,,intZ,,,,,,yleA
+17,,mcrB,,,,,,
+18,,oraA,,,,,,
+19,,pyrG,,,,,,

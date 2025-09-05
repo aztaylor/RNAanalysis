@@ -299,7 +299,7 @@ top_genes <- names(sort(gene_variance, decreasing = TRUE)[1:50])
 # Now create the dataframe for the heatmap
 
 # Example: Extract and combine results for all 12 groups
-heatmap_data <- bind_rows(
+heatmap_data_raw <- bind_rows(
   ###########################################################
   # Baseline effect with induction
   ###########################################################
@@ -355,12 +355,12 @@ heatmap_data <- bind_rows(
     timepoint = factor(timepoint, levels = c("5", "18"))
   )
 
-heatmap_data <- heatmap_data %>%
+heatmap_data <- heatmap_data_raw %>%
   dplyr::filter(
     !if_any(c(log2FoldChange, padj), is.na),  # Keep rows where these cols are non-NA
     padj < pthreshold  # Keep rows where these cols are non-zero
     )
-
+write_csv(heatmap_data, "/Users/alec/Desktop/RNAanalysis/master_df.csv")
 # Set symmetric color limits based on max absolute LFC
 lfc_limit <- max(abs(heatmap_data$log2FoldChange), na.rm = TRUE) * 1.1
 # Calculate optimal dimensions based on your data
@@ -487,7 +487,7 @@ ggplot(heatmap_data_sorted, aes(
 # Now let's create a heatmap of the relative fold changes (subtracting the WT baseline).
 ```{r, fig.width=20, fig.height=10, font.size=12}
 
-pad = 25
+pad = 28
 heatmap_relative_nc <- heatmap_data_sorted %>%
   filter(genotype == "s4") %>%  # Only NC
   inner_join(nc_baseline, by = c("Gene", "treatment", "timepoint")) %>%
@@ -534,7 +534,7 @@ s4_vs_NC_barchart <- ggplot(heatmap_relative_nc, aes(
   )) +
   geom_bar(stat = "identity") +
   scale_x_discrete(limits = rev) +
-  theme(axis.text.x = element_text(angle=90, family=font, size=fsize-2),
+  theme(axis.text.x = element_text(angle=90, family=font, size=fsize+10),
         plot.margin = margin(t=pad, b=pad, l=pad, r=pad)) +
   scale_fill_gradient2(
     low = "blue", mid = "grey", high = "red",
@@ -554,8 +554,9 @@ s4_vs_NC_histogram <- ggplot(heatmap_relative_nc, aes(x = log2FoldChange)) +
   ) + 
   theme(plot.margin = margin(t=pad, b=pad, l=pad, r=pad))
 
-lay <- rbind(c(1, 2),
-             c(1, 3))
+lay <- rbind(c(1, 2, 2),
+             c(1, 2, 2),
+             c(1, 3, 3))
 grid <- grid.arrange(
   s4_vs_NC_heatmap,
   s4_vs_NC_barchart,
@@ -569,6 +570,24 @@ ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPre
       width = 5,
       height = 10,
       dpi = 300,)
+
+
+```
+```{r}
+
+```
+
+
+```{r}
+positive_count <- heatmap_relative_nc %>%
+  filter(log2FoldChange > 0) %>%
+  nrow()
+
+negative_count <- heatmap_relative_nc %>%
+  filter(log2FoldChange < 0) %>%
+  nrow()
+
+print(paste0("Number of genes with positive log2FoldChange: ", positive_count, "Number of genes with negative log2FoldChange: ", negative_count))
 ```
 
 
@@ -599,6 +618,10 @@ genes <- c(
   # Hypothetical or unknown function genes
   "yabO", "yagP", "ychB", "ydiY", "yebE", "yebF", "yeeN", "yfgB", "yfhN",
   "yfhO", "yghB", "yhjG", "yi52–10", "yibB", "yjeS", "ylaC", "yleA"
+)
+
+gene_functions <- data.frame(
+  
 )
 
 # Create a data frame for norfloxacin expression values from Table 1
@@ -716,14 +739,14 @@ subset_df2 <- subset_df2 %>% mutate(group = case_when(
 ))
 subset_df2 <- subset_df2 %>% mutate(label = case_when(
   colname == "log2FoldChange" ~ "dCasRx\n5hr",
-  colname == "Nor_0.5_MIC" ~ "Nofloxacin\n0.5MIC",
-  colname == "Nor_1_MIC" ~ "Nofloxacin\n1MIC",
-  colname == "Nor_2_MIC" ~ "Nofloxacin\n2MIC",
-  colname == "Nor_33_MIC" ~ "Nofloxacin\n33MIC",
-  colname == "Nor_133_MIC" ~ "Nofloxacin\n133MIC"
+  colname == "Nor_0.5_MIC" ~ "Norfloxacin\n0.5MIC",
+  colname == "Nor_1_MIC" ~ "Norfloxacin\n1MIC",
+  colname == "Nor_2_MIC" ~ "Norfloxacin\n2MIC",
+  colname == "Nor_33_MIC" ~ "Norfloxacin\n33MIC",
+  colname == "Nor_133_MIC" ~ "Norfloxacin\n133MIC"
 ))
 
-subset_df2$label <- factor(subset_df2$label, levels=c("dCasRx\n5hr", "Nofloxacin\n0.5MIC", "Nofloxacin\n1MIC", "Nofloxacin\n2MIC", "Nofloxacin\n33MIC", "Nofloxacin\n133MIC"))
+subset_df2$label <- factor(subset_df2$label, levels=c("dCasRx\n5hr", "Norfloxacin\n0.5MIC", "Norfloxacin\n1MIC", "Norfloxacin\n2MIC", "Norfloxacin\n33MIC", "Norfloxacin\n133MIC"))
 subset_df2$colname  <- factor(subset_df2$colname, levels=c("Targeting5hr", "Nor_0.5_MIC", "Nor_1_MIC", "Nor_2_MIC", "Nor_33_MIC", "Nor_133_MIC"))
 subset_df2$rowname <- factor(subset_df2$rowname, levels=unique(subset_df2$rowname))
 
@@ -753,8 +776,96 @@ print(trt_comp)
 ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/GroupMeetings/GroupMeetingPresentation2025_05_16 /Slides/Figures/trt_compNC_vs_s4.png", trt_comp, dpi=600)
 ```
 ```{r, fig.width=20, fig.height=10, font.size=12}
-lay <- rbind(c(1, 2),
-             c(3, 4))
+fsize <- 16
+pad = 28
+# -------------------------------------------------------------------------------
+# barchart of relative foldchanges.
+# -------------------------------------------------------------------------------
+s4_vs_NC_barchart <- ggplot(heatmap_relative_nc, aes(
+    x = Gene,
+    y = log2FoldChange
+  )) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle=90, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, family=font, size=fsize),
+        axis.title = element_text(family=font, size=fsize+2),
+        plot.margin = margin(t=pad, b=pad, l=pad, r=pad)) +
+  scale_fill_gradient2(
+    low = "blue", mid = "grey", high = "red",
+    limits = c(-20, 20)) +  # Adjust based on your data ) +
+  labs(
+    x = "Gene",
+    y = expression(log[2]~" Fold Change")
+    #title = "Relative Fold Changes (s4 vs NC)"
+  )
+
+# -------------------------------------------------------------------------------
+# Histogram of relative fold changes
+# -------------------------------------------------------------------------------
+s4_vs_NC_histogram <- ggplot(heatmap_relative_nc, aes(x = log2FoldChange)) +
+  geom_histogram(bins = 25, fill = "blue", color = "black", alpha = 0.7) +
+  theme(axis.text.x = element_text(angle=0, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, family=font, size=fsize),
+        axis.title = element_text(family=font, size=fsize+2),
+        plot.margin = margin(t=pad, b=pad, l=pad, r=pad)) +
+  labs(
+    x = expression(log[2]~" Fold Change"),
+    y = "Frequency",
+    #title = "Distribution of Relative Fold Changes (s4 vs NC)"
+  ) + 
+  theme(plot.margin = margin(t=pad, b=pad, l=pad, r=pad)
+)
+# -------------------------------------------------------------------------------
+# Heatmap of Norfloxacin expression values
+# -------------------------------------------------------------------------------
+nor_top_hits <- ggplot(varNor_l2f_df, aes(x=colname, y=rowname, fill=value)) +
+  geom_tile() +
+  #scale_fill_distiller(palette="RdGy") +
+  theme(axis.text.x = element_text(angle=0, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, family=font, size=fsize-2),
+        plot.margin = margin(t=pad, b=pad, l=pad, r=pad-5),
+        axis.title = element_text(family=font, size=fsize+2)) +
+  coord_cartesian(clip = "off") +
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred",
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  #scale_x_discrete(labels = columns) +
+  xlab("Norfloxacin [MIC]") +
+  ylab("Gene")+
+  labs(fill=expression(atop(log[2],"Fold Change")),
+       #title = "Relative Fold Changes (Norfloxacin)")
+  )
+# -------------------------------------------------------------------------------
+# Heatmap of treatment comparisons
+# -------------------------------------------------------------------------------
+trt_comp <- ggplot(subset_df2, aes(x=label, y=rowname, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "darkblue",  high = "darkred"
+    #limits = c(-20, 20)  # Adjust based on your data
+  ) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, vjust = 0, family=font, size=fsize),
+        axis.title = element_text(family=font, size=fsize+2),
+        plot.margin = margin(t=pad, b=pad, l=pad-10, r=pad)) +
+  #theme( plot.margin=unit(c(2,2,2,2), "lines")) +
+  #annotation_custom(x_ann1, xmin=1.5, xmax=1, ymin=6, ymax=6) +
+  #annotation_custom(x_ann2, xmin= 3.5, xmax=3.5, ymin=6, ymax=6)+
+  #facet_wrap( ~group, scales="free_x" ) +
+  #scale_x_discrete(labels = c("Non-Targeting gRNA", "Non-Targeting gRNA", "Targeing gRNA", "Targeting gRNA", "Norfloxacin 0.5MIC", "Norfloxacin 1MIC", "Norfloxacin 2MIC", "Norfloxacin 33MIC", "Norfloxacin 133MIC")) +
+  coord_cartesian(clip = "off") +
+  xlab("Treatment") +
+  ylab("Gene")+
+  labs(fill=expression(atop(log[2],"Fold Change")),
+       #title = "Comparison of Relative Fold Changes (dCasRx vs Norfloxacin)"
+  )
+
+lay <- rbind(c(1, 1, 1),
+             c(2, 3, 4),
+             c(2, 3, 4))
+
 grid <- grid.arrange(
   s4_vs_NC_barchart,
   s4_vs_NC_histogram,
@@ -774,6 +885,81 @@ ggsave("../Figures/Figure5.png",
 
 
 ```
+```{r}
+# Arrange master df in order or decreasing absolute log2FoldChange for only s4
+sorted_master_df <- Master_df %>%
+  arrange(desc(abs(log2FoldChange))) 
+
+
+```
+
+
+```{r, fig.width=20, fig.height=10, font.size=12}
+fsize <- 16
+pad = 28
+# -------------------------------------------------------------------------------
+# barchart of relative foldchanges.
+# -------------------------------------------------------------------------------
+s4_vs_NC_barchart <- ggplot(heatmap_relative_nc, aes(
+    x = Gene,
+    y = log2FoldChange
+  )) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle=90, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, family=font, size=fsize),
+        axis.title = element_text(family=font, size=fsize+2),
+        plot.margin = margin(t=pad, b=pad, l=pad, r=pad)) +
+  scale_fill_gradient2(
+    low = "blue", mid = "grey", high = "red",
+    limits = c(-20, 20)) +  # Adjust based on your data ) +
+  labs(
+    x = "Gene",
+    y = expression(log[2]~" Fold Change")
+    #title = "Relative Fold Changes (s4 vs NC)"
+  )
+
+# -------------------------------------------------------------------------------
+# Histogram of relative fold changes
+# -------------------------------------------------------------------------------
+s4_vs_NC_histogram <- ggplot(heatmap_relative_nc, aes(x = log2FoldChange)) +
+  geom_histogram(bins = 25, fill = "blue", color = "black", alpha = 0.7) +
+  theme(axis.text.x = element_text(angle=0, family=font, size=fsize),
+        axis.text.y = element_text(angle=0, family=font, size=fsize),
+        axis.title = element_text(family=font, size=fsize+2),
+        plot.margin = margin(t=pad, b=pad, l=pad, r=pad)) +
+  labs(
+    x = expression(log[2]~" Fold Change"),
+    y = "Frequency",
+    #title = "Distribution of Relative Fold Changes (s4 vs NC)"
+  ) + 
+  theme(plot.margin = margin(t=pad, b=pad, l=pad, r=pad)
+)
+
+empty_plot <- ggplot() +
+  theme_void() +
+  theme(plot.margin = margin(t=pad, b=pad, l=pad, r=pad))
+
+lay <- rbind(c(1, 1),
+             c(2, 3))
+
+grid <- grid.arrange(
+  s4_vs_NC_barchart,
+  s4_vs_NC_histogram,
+  empty_plot,
+  ncol = 2,
+  layout_matrix = lay,
+  padding = 5
+)
+
+ggsave("/Users/alec/Documents/GradSchool/Yeung_Lab/T32 Symposium Slides/PNGs/Figure5B_dCasRxBarChart_and_hist.png",
+       grid,
+       width = 30,
+       height = 15,
+       dpi = 300,
+       units = "in")
+```
+
 # Pull the gene functions from Uniprot.
 ```{r}
 get_go_terms <- function(entry) {
@@ -855,6 +1041,26 @@ function_df$Functions <- sapply(corpus, as.character)
 #function_df <- subset(function_df, select = - function_term)
 Master_df <- inner_join(function_df, heatmap_data, by = "Gene")
 ```
+# search for PPP and Pnt Genes.
+```{r}
+ppp_go_ids <- c("GO:0006098", "GO:0019321", "GO:0055114")  
+pntab_go_id <- "GO:0008750"  
+
+ppp_go_ids <- c("GO:0006098", "GO:0019321", "GO:0055114")
+
+ppp_genes <- Master_df %>%
+  filter(str_detect(GO, paste(ppp_go_ids, collapse = "|"))) %>%
+  select(Gene, Functions, GO, log2FoldChange, sig_star)
+
+pntab_go_id <- "GO:0008750"
+
+pntab_genes <- Master_df %>%
+  filter(str_detect(GO, pntab_go_id)) %>%
+  select(Gene, Functions, GO, log2FoldChange, sig_star)
+```
+
+
+
 # Vectorize the corpus using A Bag-of-Words with TF-IDF weighting and Word Embeddings via Glove or Word2Vec.
 ```{r}
 # A Bag-of-Words with TF-IDF weighting.
